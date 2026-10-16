@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="hero"><div><p class="eyebrow">OFFLINE / WINDOWS</p><h1>條碼報工工作台</h1><p>從主檔選擇機型與機台，建立批次、列印成對條碼，再以 USB HID 掃描完成 START / FINISH。</p></div><a class="button primary" href="{{ url_for('main.job_new') }}">建立新報工</a></section>
+<div class="cards">{% for row in stats %}<div class="stat"><span>{{ row.status }}</span><strong>{{ row.count }}</strong></div>{% else %}<div class="empty">尚無報工紀錄</div>{% endfor %}</div>
+<div class="grid two"><section class="panel"><h2>快速操作</h2><div class="quick-links"><a href="{{ url_for('main.job_new') }}">建立並列印條碼</a><a href="{{ url_for('main.scan_page') }}">開啟掃描頁</a><a href="{{ url_for('main.reports') }}">查詢與匯出報表</a></div></section><section class="panel"><h2>資料安全</h2><p>系統預設只綁定 127.0.0.1，資料保存在本機 SQLite。管理員可從下方建立驗證過的備份。</p><form method="post" action="{{ url_for('main.backup') }}"><button class="button">立即備份資料庫</button></form></section></div>
+{% endblock %}
+
