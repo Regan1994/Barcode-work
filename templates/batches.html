@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>最近批次</h1>
+<p class="muted">保留最近建立的批次，貼紙損壞時可重新開啟原本的標籤預覽列印。重新列印不會建立新的製號或條碼。</p>
+<section class="panel table-wrap">
+  <table>
+    <tr><th>建立時間</th><th>機型</th><th>製號範圍</th><th>台數</th><th>組裝人員</th><th>操作</th></tr>
+    {% for batch in batches %}
+    <tr>
+      <td>{{ batch.created_at }}</td>
+      <td>{{ batch.model_name }}</td>
+      <td>{{ batch.serial_range }}</td>
+      <td>{{ batch.product_count }}</td>
+      <td>{{ batch.operator_name }}</td>
+      <td><a class="button small" href="{{ url_for('main.print_batch', batch_id=batch.batch_id) }}">重新列印</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6">目前沒有批次資料</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

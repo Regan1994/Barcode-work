@@ -342,6 +342,36 @@ def get_batch(batch_id):
     return get_db().execute("SELECT * FROM production_batch WHERE batch_id=?", (batch_id,)).fetchone()
 
 
+def list_recent_batches(limit=20):
+    """Return recent batches with details needed for reprinting."""
+    limit = max(1, min(int(limit), 100))
+    db = get_db()
+    batches = db.execute("SELECT * FROM production_batch ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    recent = []
+    for batch in batches:
+        jobs = db.execute(
+            "SELECT product_serial,machine_no_snapshot,model_name_snapshot FROM job_run WHERE batch_id=? ORDER BY id",
+            (batch["batch_id"],),
+        ).fetchall()
+        serials = [job["product_serial"] or job["machine_no_snapshot"] for job in jobs if job["product_serial"] or job["machine_no_snapshot"]]
+        model_names = [job["model_name_snapshot"] for job in jobs if job["model_name_snapshot"]]
+        if len(serials) > 1:
+            serial_range = f"{serials[0]}~{serials[-1]}"
+        else:
+            serial_range = serials[0] if serials else "-"
+        recent.append(
+            {
+                "batch_id": batch["batch_id"],
+                "created_at": batch["created_at"],
+                "model_name": model_names[0] if model_names else "-",
+                "serial_range": serial_range,
+                "product_count": len(jobs),
+                "operator_name": batch["operator_name"],
+            }
+        )
+    return recent
+
+
 def get_job(job_run_id):
     return get_db().execute("SELECT * FROM job_run WHERE job_run_id=?", (job_run_id,)).fetchone()
 

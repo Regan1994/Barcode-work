@@ -168,6 +168,32 @@ def test_report_filter_print_and_export_use_product_serial(client, app, tmp_path
     assert "機型名稱" in report
 
 
+def test_recent_batches_reprint_reuses_original_batch_and_barcodes(client, app):
+    model_id, _ = setup_data(app)
+    with app.app_context():
+        batch_id, _ = create_batch(model_id, 2026, 10, 2, "operator")
+        ensure_barcodes(batch_id)
+        batch_no = get_db().execute("SELECT batch_no FROM production_batch WHERE batch_id=?", (batch_id,)).fetchone()[0]
+        original_records = get_db().execute("SELECT barcode_type,payload FROM barcode_record WHERE batch_id=? ORDER BY barcode_type", (batch_id,)).fetchall()
+
+    recent = client.get("/batches/recent")
+    assert recent.status_code == 200
+    recent_text = recent.get_data(as_text=True)
+    assert "最近批次" in recent_text
+    assert "HR-255" in recent_text
+    assert "E27-10~E27-11" in recent_text
+    assert batch_no not in recent_text
+    assert f"/batches/{batch_id}/print" in recent_text
+
+    reprint = client.get(f"/batches/{batch_id}/print")
+    assert reprint.status_code == 200
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM production_batch").fetchone()[0] == 1
+        assert get_db().execute("SELECT COUNT(*) FROM job_run WHERE batch_id=?", (batch_id,)).fetchone()[0] == 2
+        repeated_records = get_db().execute("SELECT barcode_type,payload FROM barcode_record WHERE batch_id=? ORDER BY barcode_type", (batch_id,)).fetchall()
+        assert [(row["barcode_type"], row["payload"]) for row in repeated_records] == [(row["barcode_type"], row["payload"]) for row in original_records]
+
+
 def test_long_model_prints_compact_quantity_on_first_line(client, app):
     with app.app_context():
         model_id = create_model("FHR-400C-540-HR400B-FA", "FHR400C540HR400BFA", serial_prefix="F")

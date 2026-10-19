@@ -21,6 +21,9 @@
 
 .thermal-heading {
   min-height: 8mm;
+  padding: 1mm 1.5mm;
+  border: 1px solid #829ab1;
+  border-radius: 1mm;
   display: flex;
   flex-direction: column;
   gap: .5mm;
@@ -71,8 +74,8 @@
 
 .thermal-barcodes .barcode-card {
   min-height: 0;
-  padding: 1mm 3mm;
-  border: 1px solid #829ab1;
+  padding: 1mm 0;
+  border: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -88,7 +91,7 @@
 .thermal-barcodes .barcode { min-height: 0; width: 100%; }
 .thermal-barcodes .barcode svg {
   width: 100%;
-  max-width: 48mm;
+  max-width: 52mm;
   height: 14mm;
   min-height: 0;
 }
@@ -106,5 +109,5 @@
     page-break-after: always;
   }
   .thermal-label:last-child { break-after: auto; page-break-after: auto; }
-  .thermal-barcodes .barcode-card { border-color: #000; }
+  .thermal-heading { border-color: #000; }
 }

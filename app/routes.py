@@ -9,7 +9,7 @@ from flask import Blueprint, current_app, flash, jsonify, redirect, render_templ
 
 from .barcode import code128_svg
 from .db import get_db
-from .services import ALLOWED_SEMANTICS, DEBUG_CLEAR_CHOICES, backup_database, clear_debug_data, correct_actual_qty, create_assembly_worker, create_batch, create_model, debug_clear_counts, delete_model, ensure_barcodes, export_xlsx, get_assembly_worker, get_batch, get_job, get_setting, list_assembly_workers, list_models, list_report_operators, parse_payload, query_report, restore_database, scan, set_assembly_worker_active, set_setting, update_model
+from .services import ALLOWED_SEMANTICS, DEBUG_CLEAR_CHOICES, backup_database, clear_debug_data, correct_actual_qty, create_assembly_worker, create_batch, create_model, debug_clear_counts, delete_model, ensure_barcodes, export_xlsx, get_assembly_worker, get_batch, get_job, get_setting, list_assembly_workers, list_models, list_recent_batches, list_report_operators, parse_payload, query_report, restore_database, scan, set_assembly_worker_active, set_setting, update_model
 
 bp = Blueprint("main", __name__)
 
@@ -140,6 +140,11 @@ def print_batch(batch_id):
     jobs = ensure_barcodes(batch_id)
     records = get_db().execute("SELECT * FROM barcode_record WHERE batch_id=? OR job_run_id IN (SELECT job_run_id FROM job_run WHERE batch_id=?) ORDER BY barcode_scope, CASE barcode_type WHEN 'START' THEN 0 WHEN 'FINISH' THEN 1 ELSE 2 END, job_run_id", (batch_id, batch_id)).fetchall()
     return render_template("print_batch.html", batch=batch, jobs=jobs, records=records, code128_svg=code128_svg)
+
+
+@bp.get("/batches/recent")
+def recent_batches():
+    return render_template("batches.html", batches=list_recent_batches())
 
 
 @bp.route("/scan", methods=["GET", "POST"])
