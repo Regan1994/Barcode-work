@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS job_run (
     manufacturing_year INTEGER,
     model_name_snapshot TEXT NOT NULL,
     model_code_snapshot TEXT NOT NULL,
-    machine_no_snapshot TEXT NOT NULL,
+    machine_no_snapshot TEXT,
     number_semantics_snapshot TEXT NOT NULL DEFAULT 'unknown',
     work_order_no TEXT,
     product_lot_no TEXT,
@@ -177,6 +177,8 @@ def init_db():
     db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)", (2, utc_now()))
     db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)", (4, utc_now()))
     migrate_product_serials(db)
+    migrate_machine_snapshot(db)
+    db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)", (5, utc_now()))
     if needs_batch_mode_migration:
         db.execute("UPDATE app_settings SET value='batch', updated_at=? WHERE key='batch_scan_mode'", (utc_now(),))
     db.execute(
@@ -256,4 +258,57 @@ def migrate_product_serials(db):
             db.execute("PRAGMA foreign_keys=ON")
     db.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(3,?)", (utc_now(),))
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_job_run_product_serial ON job_run(product_serial) WHERE product_serial IS NOT NULL")
+
+
+def migrate_machine_snapshot(db):
+    """Allow new product records to leave the legacy machine snapshot empty."""
+    column = next(row for row in db.execute("PRAGMA table_info(job_run)") if row["name"] == "machine_no_snapshot")
+    if not column["notnull"]:
+        return
+
+    db.commit()
+    db.execute("PRAGMA foreign_keys=OFF")
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("""
+            CREATE TABLE job_run_v5 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_run_id TEXT NOT NULL UNIQUE,
+                batch_id TEXT NOT NULL REFERENCES production_batch(batch_id),
+                model_id INTEGER NOT NULL REFERENCES model_master(id),
+                machine_id INTEGER REFERENCES machine_master(id),
+                product_serial TEXT,
+                manufacturing_year INTEGER,
+                model_name_snapshot TEXT NOT NULL,
+                model_code_snapshot TEXT NOT NULL,
+                machine_no_snapshot TEXT,
+                number_semantics_snapshot TEXT NOT NULL DEFAULT 'unknown',
+                work_order_no TEXT,
+                product_lot_no TEXT,
+                process_name TEXT,
+                planned_qty INTEGER CHECK(planned_qty > 0),
+                actual_qty INTEGER,
+                status TEXT NOT NULL DEFAULT 'created' CHECK(status IN ('created','started','finished','cancelled')),
+                started_at TEXT,
+                finished_at TEXT,
+                operator_name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        columns = "id,job_run_id,batch_id,model_id,machine_id,product_serial,manufacturing_year,model_name_snapshot,model_code_snapshot,machine_no_snapshot,number_semantics_snapshot,work_order_no,product_lot_no,process_name,planned_qty,actual_qty,status,started_at,finished_at,operator_name,created_at,updated_at"
+        db.execute(f"INSERT INTO job_run_v5({columns}) SELECT {columns} FROM job_run")
+        db.execute("DROP TABLE job_run")
+        db.execute("ALTER TABLE job_run_v5 RENAME TO job_run")
+        db.execute("CREATE INDEX idx_job_run_status ON job_run(status)")
+        db.execute("CREATE INDEX idx_job_run_created_at ON job_run(created_at)")
+        db.execute("CREATE INDEX idx_job_run_model ON job_run(model_code_snapshot)")
+        db.execute("CREATE INDEX idx_job_run_machine ON job_run(machine_no_snapshot)")
+        db.execute("CREATE UNIQUE INDEX uq_job_run_product_serial ON job_run(product_serial) WHERE product_serial IS NOT NULL")
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.execute("PRAGMA foreign_keys=ON")
 

@@ -1,12 +1,15 @@
 import tempfile
+import hmac
+import secrets
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from flask import Blueprint, current_app, flash, jsonify, redirect, render_template, request, send_file, url_for
+from flask import Blueprint, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from .barcode import code128_svg
 from .db import get_db
-from .services import ALLOWED_SEMANTICS, backup_database, correct_actual_qty, create_assembly_worker, create_batch, create_machine, create_machine_range, create_model, ensure_barcodes, export_xlsx, get_assembly_worker, get_batch, get_job, get_setting, list_assembly_workers, list_machines, list_models, parse_payload, query_report, restore_database, scan, set_assembly_worker_active, set_setting, update_machine, update_model
+from .services import ALLOWED_SEMANTICS, DEBUG_CLEAR_CHOICES, backup_database, clear_debug_data, correct_actual_qty, create_assembly_worker, create_batch, create_model, debug_clear_counts, delete_model, ensure_barcodes, export_xlsx, get_assembly_worker, get_batch, get_job, get_setting, list_assembly_workers, list_models, list_report_operators, parse_payload, query_report, restore_database, scan, set_assembly_worker_active, set_setting, update_model
 
 bp = Blueprint("main", __name__)
 
@@ -39,49 +42,52 @@ def index():
 def models():
     if request.method == "POST":
         try:
-            create_model(request.form.get("model_name"), request.form.get("model_code"), request.form.get("description", ""), request.form.get("operator_name", "admin"), request.form.get("serial_prefix"))
+            create_model(request.form.get("model_name"), description=request.form.get("description", ""), operator_name=request.form.get("operator_name", "admin"), serial_prefix=request.form.get("serial_prefix"))
             flash("機型已建立", "success")
         except ValueError as exc:
             flash(str(exc), "error")
-    return render_template("models.html", models=list_models())
+    token = session.get("model_delete_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["model_delete_token"] = token
+    return render_template("models.html", models=list_models(), delete_token=token)
 
 
 @bp.post("/models/<int:model_id>/update")
 def model_update(model_id):
     try:
-        update_model(model_id, request.form.get("model_name"), request.form.get("model_code"), request.form.get("description", ""), request.form.get("is_active") == "1", request.form.get("operator_name", "admin"), request.form.get("serial_prefix"))
+        update_model(model_id, request.form.get("model_name"), description=request.form.get("description", ""), is_active=request.form.get("is_active") == "1", operator_name=request.form.get("operator_name", "admin"), serial_prefix=request.form.get("serial_prefix"))
         flash("機型已更新", "success")
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(url_for("main.models"))
 
 
+@bp.post("/models/<int:model_id>/delete")
+def model_delete(model_id):
+    token = session.get("model_delete_token", "")
+    if not token or not hmac.compare_digest(token, request.form.get("csrf_token", "")):
+        flash("刪除確認已失效，請重新開啟機型主檔", "error")
+        return redirect(url_for("main.models"))
+    try:
+        backup = delete_model(model_id, request.form.get("expected_name", ""), current_app.config["BACKUP_DIRECTORY"])
+        session.pop("model_delete_token", None)
+        flash(f"機型已刪除；資料庫備份：{backup.name}", "success")
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        flash(f"沒有刪除機型：{exc}", "error")
+    return redirect(url_for("main.models"))
+
+
 @bp.route("/machines", methods=["GET", "POST"])
 def machines():
-    models = list_models()
-    if request.method == "POST":
-        try:
-            model_id = int(request.form["model_id"])
-            semantics = request.form.get("number_semantics") or "unknown"
-            if request.form.get("create_mode") == "range":
-                create_machine_range(model_id, request.form["prefix"], int(request.form["start"]), int(request.form["end"]), int(request.form["width"]), semantics, request.form.get("operator_name", "admin"))
-            else:
-                create_machine(model_id, request.form["display_no"], request.form.get("prefix", ""), None, None, semantics, request.form.get("operator_name", "admin"))
-            flash("機台已建立", "success")
-        except (ValueError, KeyError) as exc:
-            flash(str(exc), "error")
-    model_id = request.args.get("model_id")
-    return render_template("machines.html", models=models, machines=list_machines(model_id), selected_model=model_id, semantics=ALLOWED_SEMANTICS)
+    flash("新產品報工不需要先建立機台主檔，請直接從建立報工輸入機型、年份、起始流水號與台數。", "info")
+    return redirect(url_for("main.job_new"))
 
 
 @bp.post("/machines/<int:machine_id>/update")
 def machine_update(machine_id):
-    try:
-        update_machine(machine_id, request.form.get("display_no"), request.form.get("number_semantics"), request.form.get("is_active") == "1", request.form.get("operator_name", "admin"))
-        flash("機台已更新", "success")
-    except ValueError as exc:
-        flash(str(exc), "error")
-    return redirect(url_for("main.machines", model_id=request.form.get("model_id")))
+    flash("新流程不再維護機台主檔；舊機台資料僅保留供歷史資料相容。", "info")
+    return redirect(url_for("main.job_new"))
 
 
 @bp.route("/assembly-workers", methods=["GET", "POST"])
@@ -132,7 +138,7 @@ def print_batch(batch_id):
     if not batch:
         return "找不到批次", 404
     jobs = ensure_barcodes(batch_id)
-    records = get_db().execute("SELECT * FROM barcode_record WHERE batch_id=? OR job_run_id IN (SELECT job_run_id FROM job_run WHERE batch_id=?) ORDER BY barcode_scope, barcode_type, job_run_id", (batch_id, batch_id)).fetchall()
+    records = get_db().execute("SELECT * FROM barcode_record WHERE batch_id=? OR job_run_id IN (SELECT job_run_id FROM job_run WHERE batch_id=?) ORDER BY barcode_scope, CASE barcode_type WHEN 'START' THEN 0 WHEN 'FINISH' THEN 1 ELSE 2 END, job_run_id", (batch_id, batch_id)).fetchall()
     return render_template("print_batch.html", batch=batch, jobs=jobs, records=records, code128_svg=code128_svg)
 
 
@@ -153,7 +159,7 @@ def api_scan():
 def reports():
     filters = request.form.to_dict() if request.method == "POST" else request.args.to_dict()
     rows = query_report(filters)
-    return render_template("reports.html", rows=rows, filters=filters)
+    return render_template("reports.html", rows=rows, filters=filters, operators=list_report_operators())
 
 
 @bp.post("/reports/export")
@@ -187,6 +193,31 @@ def settings():
         except ValueError as exc:
             flash(str(exc), "error")
     return render_template("settings.html", number_semantics=get_setting("number_semantics", "unknown"), batch_scan_mode=get_setting("batch_scan_mode", "batch"), semantics=ALLOWED_SEMANTICS)
+
+
+@bp.route("/debug/clear", methods=["GET", "POST"])
+def debug_clear():
+    if request.method == "POST":
+        token = session.get("debug_clear_token", "")
+        if not token or not hmac.compare_digest(token, request.form.get("csrf_token", "")):
+            flash("清除確認已失效，請重新開啟頁面", "error")
+            return redirect(url_for("main.debug_clear"))
+        try:
+            backup, removed = clear_debug_data(
+                request.form.getlist("items"),
+                request.form.get("confirmation", ""),
+                current_app.config["BACKUP_DIRECTORY"],
+            )
+            session.pop("debug_clear_token", None)
+            flash(f"清除完成；已先備份至 {backup}。清除筆數：{sum(removed.values())}", "success")
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            flash(f"沒有清除資料：{exc}", "error")
+        return redirect(url_for("main.debug_clear"))
+    token = session.get("debug_clear_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["debug_clear_token"] = token
+    return render_template("debug_clear.html", counts=debug_clear_counts(), choices=DEBUG_CLEAR_CHOICES, csrf_token=token)
 
 
 @bp.post("/backup")

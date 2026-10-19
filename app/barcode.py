@@ -37,5 +37,5 @@ def code128_svg(text, height=64, module=2):
                 bars.append(f'<rect x="{x}" y="0" width="{w}" height="{height}"/>')
             x += w
             black = not black
-    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img" aria-label="Code128 barcode">{"".join(bars)}</svg>'
+    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" preserveAspectRatio="none" role="img" aria-label="Code128 barcode">{"".join(bars)}</svg>'
 

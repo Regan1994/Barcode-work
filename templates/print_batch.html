@@ -1,2 +1,60 @@
 {% extends 'base.html' %}
-{% block content %}<div class="print-toolbar"><div><h1>批次列印預覽</h1><p>批次號：<code>{{ batch.batch_no }}</code>　組裝人員：{{ batch.operator_name }}　建立時間：{{ batch.created_at }}</p></div><button class="button primary" onclick="window.print()">列印</button></div><section class="print-sheet">{% set batch_records = records|selectattr('barcode_scope', 'equalto', 'batch')|list %}{% if batch_records %}<article class="label-card"><div class="label-head"><strong>整批產品報工</strong><span>{{ jobs|length }} 台產品</span></div><p>機型：{{ jobs[0].model_name_snapshot }}（{{ jobs[0].model_code_snapshot }}）</p><p>製作年份：{{ jobs[0].manufacturing_year or '歷史資料' }}</p><p>產品製號：{% for job in jobs %}{{ job.product_serial or job.machine_no_snapshot }}{% if not loop.last %}、{% endif %}{% endfor %}</p><div class="barcode-pair batch-pair">{% for record in batch_records %}<div class="barcode-card"><h3>{{ record.barcode_type }}</h3><div class="barcode">{{ code128_svg(record.payload)|safe }}</div><small>{{ record.payload }}</small><small>批次：{{ batch.batch_no }}</small></div>{% endfor %}</div></article>{% else %}{% for job in jobs %}<article class="label-card"><div class="label-head"><strong>{{ job.model_name_snapshot }}（{{ job.model_code_snapshot }}）</strong><span>{{ job.product_serial or job.machine_no_snapshot }}</span></div><div class="barcode-pair">{% for record in records if record.job_run_id == job.job_run_id %}<div class="barcode-card"><h3>{{ record.barcode_type }}</h3><div class="barcode">{{ code128_svg(record.payload)|safe }}</div><small>{{ record.payload }}</small><small>批次：{{ batch.batch_no }}</small></div>{% endfor %}</div></article>{% endfor %}{% endif %}</section>{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='print-label.css') }}">{% endblock %}
+{% block content %}
+<div class="print-toolbar">
+  <div>
+    <h1>批次列印預覽</h1>
+    <p>批次號：<code>{{ batch.batch_no }}</code>　組裝人員：{{ batch.operator_name }}　建立時間：{{ batch.created_at }}</p>
+  </div>
+  <button class="button primary" onclick="window.print()">列印</button>
+</div>
+
+<section class="print-sheet">
+  {% set batch_records = records|selectattr('barcode_scope', 'equalto', 'batch')|list %}
+  {% if batch_records %}
+  <article class="label-card thermal-label">
+    <div class="thermal-heading">
+      <div class="thermal-model-line">
+        <strong>{{ jobs[0].model_name_snapshot }}</strong>
+        <span class="thermal-count">{{ jobs|length }}台</span>
+      </div>
+      <div class="thermal-details">
+        <span class="thermal-serials">{% if batch.selection_mode == 'serial_range' %}{{ jobs[0].product_serial }}{% if jobs|length > 1 %}~{{ jobs[-1].product_serial }}{% endif %}{% else %}{% for job in jobs %}{{ job.product_serial or job.machine_no_snapshot }}{% if not loop.last %}、{% endif %}{% endfor %}{% endif %}</span>
+        <span class="thermal-worker">{{ batch.operator_name }}</span>
+      </div>
+    </div>
+    <div class="thermal-barcodes">
+      {% for record in batch_records %}
+      <div class="barcode-card">
+        <h3>{{ '開始' if record.barcode_type == 'START' else '結束' }}</h3>
+        <div class="barcode">{{ code128_svg(record.payload)|safe }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </article>
+  {% else %}
+    {% for job in jobs %}
+    <article class="label-card thermal-label">
+      <div class="thermal-heading">
+        <div class="thermal-model-line">
+          <strong>{{ job.model_name_snapshot }}</strong>
+          <span class="thermal-count">1台</span>
+        </div>
+        <div class="thermal-details">
+          <span class="thermal-serials">{{ job.product_serial or job.machine_no_snapshot }}</span>
+          <span class="thermal-worker">{{ batch.operator_name }}</span>
+        </div>
+      </div>
+      <div class="thermal-barcodes">
+        {% for record in records if record.job_run_id == job.job_run_id %}
+        <div class="barcode-card">
+          <h3>{{ '開始' if record.barcode_type == 'START' else '結束' }}</h3>
+          <div class="barcode">{{ code128_svg(record.payload)|safe }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </article>
+    {% endfor %}
+  {% endif %}
+</section>
+{% endblock %}

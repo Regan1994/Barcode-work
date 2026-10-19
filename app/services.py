@@ -19,6 +19,12 @@ STATUS_LABELS = {
     "cancelled": "已取消",
 }
 MODEL_SERIAL_PREFIXES = {"HR255": "E", "RC255": "ER", "AR210": "C", "AR170": "B", "RC210": "CR"}
+DEBUG_CLEAR_CHOICES = {
+    "production": "報工批次與條碼",
+    "scans": "掃描紀錄",
+    "workers": "組裝人員",
+    "models": "機型與舊機台",
+}
 
 
 def infer_serial_prefix(model_name, model_code):
@@ -110,6 +116,16 @@ def list_assembly_workers(active_only=False):
     return get_db().execute(sql + " ORDER BY name COLLATE NOCASE").fetchall()
 
 
+def list_report_operators():
+    rows = get_db().execute("""
+        SELECT name AS operator_name FROM assembly_worker WHERE trim(name) <> ''
+        UNION
+        SELECT operator_name FROM job_run WHERE trim(operator_name) <> ''
+        ORDER BY operator_name COLLATE NOCASE
+    """).fetchall()
+    return [row["operator_name"] for row in rows]
+
+
 def get_assembly_worker(name):
     name = validate_text(name, "組裝人員")
     return get_db().execute(
@@ -147,9 +163,11 @@ def set_assembly_worker_active(worker_id, is_active, changed_by="admin"):
     db.commit()
 
 
-def create_model(model_name, model_code, description="", operator_name="system", serial_prefix=None):
+def create_model(model_name, model_code=None, description="", operator_name="system", serial_prefix=None):
     model_name = validate_text(model_name, "機型名稱")
-    model_code = validate_code(model_code, "機型代碼")
+    if get_db().execute("SELECT 1 FROM model_master WHERE model_name=? COLLATE NOCASE", (model_name,)).fetchone():
+        raise ValueError("機型名稱已存在")
+    model_code = validate_code(model_name, "機型名稱") if model_code is None else validate_code(model_code, "機型代碼")
     serial_prefix = validate_code(serial_prefix, "製號字首") if serial_prefix else infer_serial_prefix(model_name, model_code)
     db = get_db()
     now = utc_now()
@@ -165,17 +183,54 @@ def create_model(model_name, model_code, description="", operator_name="system",
     return cur.lastrowid
 
 
-def update_model(model_id, model_name, model_code, description, is_active, operator_name="system", serial_prefix=None):
+def update_model(model_id, model_name, model_code=None, description="", is_active=True, operator_name="system", serial_prefix=None):
     model_name = validate_text(model_name, "機型名稱")
-    model_code = validate_code(model_code, "機型代碼")
-    serial_prefix = validate_code(serial_prefix, "製號字首") if serial_prefix else infer_serial_prefix(model_name, model_code)
     db = get_db()
+    current = db.execute("SELECT model_code FROM model_master WHERE id=?", (model_id,)).fetchone()
+    if not current:
+        raise ValueError("找不到機型")
+    if db.execute("SELECT 1 FROM model_master WHERE model_name=? COLLATE NOCASE AND id<>?", (model_name, model_id)).fetchone():
+        raise ValueError("機型名稱已存在")
+    model_code = validate_code(current["model_code"] if model_code is None else model_code, "機型代碼")
+    serial_prefix = validate_code(serial_prefix, "製號字首") if serial_prefix else infer_serial_prefix(model_name, model_code)
     try:
         db.execute("UPDATE model_master SET model_name=?,model_code=?,serial_prefix=?,description=?,is_active=?,updated_at=? WHERE id=?", (model_name, model_code, serial_prefix, description.strip(), int(bool(is_active)), utc_now(), model_id))
     except sqlite3.IntegrityError as exc:
         raise ValueError("機型代碼已存在") from exc
     add_audit("update", "model_master", str(model_id), {"model_code": model_code, "is_active": bool(is_active)}, operator_name)
     db.commit()
+
+
+def delete_model(model_id, expected_name, backup_dir, operator_name="admin"):
+    db = get_db()
+
+    def check_deletable():
+        model = db.execute("SELECT model_name FROM model_master WHERE id=?", (model_id,)).fetchone()
+        if not model:
+            raise ValueError("找不到機型，可能已經刪除")
+        if model["model_name"] != expected_name:
+            raise ValueError("機型名稱已變更，請重新整理後再刪除")
+        if db.execute("SELECT 1 FROM job_run WHERE model_id=? LIMIT 1", (model_id,)).fetchone():
+            raise ValueError("此機型已有報工紀錄，不能刪除；請改用停用")
+        if db.execute("SELECT 1 FROM machine_master WHERE model_id=? LIMIT 1", (model_id,)).fetchone():
+            raise ValueError("此機型仍有舊機台資料，不能刪除；請改用停用")
+        return model
+
+    check_deletable()
+    backup = backup_database(backup_dir)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        model = check_deletable()
+        db.execute("DELETE FROM model_master WHERE id=?", (model_id,))
+        add_audit("delete", "model_master", str(model_id), {"model_name": model["model_name"], "backup": str(backup)}, operator_name)
+        db.commit()
+    except sqlite3.IntegrityError as exc:
+        db.rollback()
+        raise ValueError("此機型仍有關聯資料，不能刪除；請改用停用") from exc
+    except Exception:
+        db.rollback()
+        raise
+    return backup
 
 
 def list_machines(model_id=None, active_only=False):
@@ -324,7 +379,7 @@ def create_batch(model_id, manufacturing_year, starting_number, product_count, o
     for serial in serials:
         job_id = new_id()
         job_ids.append(job_id)
-        db.execute("INSERT INTO job_run(job_run_id,batch_id,model_id,machine_id,product_serial,manufacturing_year,model_name_snapshot,model_code_snapshot,machine_no_snapshot,number_semantics_snapshot,planned_qty,status,operator_name,created_at,updated_at) VALUES(?,?,?,NULL,?,?,?,?,?,'serial',NULL,'created',?,?,?)", (job_id, batch_id, model_id, serial, manufacturing_year, model["model_name"], model["model_code"], serial, operator_name, now, now))
+        db.execute("INSERT INTO job_run(job_run_id,batch_id,model_id,machine_id,product_serial,manufacturing_year,model_name_snapshot,model_code_snapshot,machine_no_snapshot,number_semantics_snapshot,planned_qty,status,operator_name,created_at,updated_at) VALUES(?,?,?,NULL,?,?,?,?,NULL,'unknown',NULL,'created',?,?,?)", (job_id, batch_id, model_id, serial, manufacturing_year, model["model_name"], model["model_code"], operator_name, now, now))
     add_audit("create", "production_batch", batch_id, {"job_count": len(job_ids), "manufacturing_year": manufacturing_year, "serials": serials}, operator_name)
     db.commit()
     return batch_id, job_ids
@@ -488,12 +543,16 @@ def query_report(filters):
         clauses.append("j.status='finished'")
     elif status_group == "cancelled":
         clauses.append("j.status='cancelled'")
-    mapping = {"model_code": "j.model_code_snapshot", "machine_no": "COALESCE(j.product_serial,j.machine_no_snapshot)", "status": "j.status", "operator_name": "j.operator_name"}
+    mapping = {"model_name": "j.model_name_snapshot", "model_code": "j.model_code_snapshot", "machine_no": "COALESCE(j.product_serial,j.machine_no_snapshot)", "status": "j.status"}
     for key, column in mapping.items():
         value = (filters.get(key) or "").strip()
         if value:
             clauses.append(f"{column} LIKE ?")
             params.append(f"%{value}%")
+    operator_name = (filters.get("operator_name") or "").strip()
+    if operator_name:
+        clauses.append("j.operator_name = ?")
+        params.append(operator_name)
     for key, op in (("date_from", ">="), ("date_to", "<=")):
         value = (filters.get(key) or "").strip()
         if value:
@@ -537,13 +596,11 @@ def backup_database(target_dir):
     db = get_db()
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
-    source = Path(db.execute("PRAGMA database_list").fetchone()[2])
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     target = target_dir / f"intjr_backup_{timestamp}.db"
-    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    shutil.copy2(source, target)
     check = sqlite3.connect(target)
     try:
+        db.backup(check)
         integrity = check.execute("PRAGMA integrity_check").fetchone()[0]
     finally:
         check.close()
@@ -552,6 +609,53 @@ def backup_database(target_dir):
     add_audit("backup", "database", str(target), {"integrity": integrity})
     db.commit()
     return target
+
+
+def debug_clear_counts():
+    db = get_db()
+    tables = ("production_batch", "job_run", "barcode_record", "scan_event", "assembly_worker", "model_master", "machine_master")
+    return {table: db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in tables}
+
+
+def clear_debug_data(selected, confirmation, backup_dir, operator_name="admin"):
+    selected = set(selected)
+    if not selected or selected - DEBUG_CLEAR_CHOICES.keys():
+        raise ValueError("請選擇有效的清除項目")
+    if confirmation != "清除":
+        raise ValueError("請輸入「清除」確認")
+
+    db = get_db()
+    counts = debug_clear_counts()
+    if "production" not in selected and counts["job_run"] and selected & {"workers", "models"}:
+        raise ValueError("仍有報工資料；若要清除主檔，請同時選擇報工批次與條碼")
+
+    # A verified SQLite snapshot is created before any DELETE statement.
+    backup = backup_database(backup_dir)
+    removed = {}
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        if selected & {"production", "scans"}:
+            db.execute("DELETE FROM scan_event")
+            removed["scan_event"] = counts["scan_event"]
+        if "production" in selected:
+            for table in ("barcode_record", "job_run", "production_batch"):
+                db.execute(f"DELETE FROM {table}")
+                removed[table] = counts[table]
+        if "workers" in selected:
+            db.execute("DELETE FROM assembly_worker")
+            removed["assembly_worker"] = counts["assembly_worker"]
+        if "models" in selected:
+            for table in ("machine_master", "model_master"):
+                db.execute(f"DELETE FROM {table}")
+                removed[table] = counts[table]
+        if db.execute("PRAGMA foreign_key_check").fetchall():
+            raise ValueError("資料關聯檢查失敗，清除已取消")
+        add_audit("debug_clear", "database", details={"selected": sorted(selected), "removed": removed, "backup": str(backup)}, operator_name=operator_name)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return backup, removed
 
 
 def verify_sqlite_backup(path):

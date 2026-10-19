@@ -21,19 +21,20 @@ pytest -q
 
 ## 重要設計
 
-- 機型與機台皆由主檔管理；示例 E-01～E-10 的編號語意預設為 `unknown`。
+- 新產品只需由機型主檔提供製號字首；產品製號在建立報工時依年份、起始流水號與台數直接產生。舊機台主檔資料僅供歷史資料相容，不列入新流程。
 - 整批模式使用短 Code128 內容 `I1S/F + batch_token + checksum`；完整 batch、機型與機台資料留在 SQLite，讓條碼維持接近現場短標籤尺寸。
-- 預設一個 production_batch 只列印一張 START 與一張 FINISH；掃描後同步更新批次內所有 job_run，報表仍保留逐台明細。可在設定中切換成逐台模式。
+- 每個新產品批次列印一張 60×60 mm 標籤，內含開始與結束兩個條碼；掃描後同步更新批次內所有 job_run，報表仍保留逐台明細。舊批次仍可依原設定使用逐台模式。
 - 所有寫入集中在 service layer；歷史報工保存名稱、代碼、機台編號與語意 snapshot。
 - 系統包含報表 Excel、備份驗證、掃描事件與稽核紀錄的基本實作。
+- 上方「清除資料」提供除錯用分類清除，執行前會先建立完整 SQLite 備份；正式資料也會依所選分類清除。
 
 ## 分階段實作紀錄
 
 - Phase 0：專案骨架、啟動、SQLite、決策紀錄。
 - Phase 1：資料表、外鍵、索引與設定。
-- Phase 2：機型／機台主檔與 `unknown`／`asset`／`serial` 設定。
-- Phase 3：報工批次、連續／非連續機台選擇與 snapshot。
-- Phase 4：Code128 payload、條碼 SVG 與 A4 列印版面。
+- Phase 2：機型主檔、舊機台資料相容與 `unknown`／`asset`／`serial` 設定。
+- Phase 3：報工批次、產品製號連號與 snapshot。
+- Phase 4：Code128 payload、條碼 SVG 與 60×60 mm 標籤列印版面。
 - Phase 5：USB HID Enter 輸入、狀態機、冪等掃描與 scan_event。
 - Phase 6：日期與條件篩選、單一工作表 Excel 明細匯出。
 - Phase 7：SQLite 備份與完整性驗證；稽核紀錄。

@@ -1,10 +1,11 @@
 import sqlite3
+from pathlib import Path
 
 import pytest
 
 from app import create_app as build_app
 from app.db import get_db
-from app.services import backup_database, create_assembly_worker, create_batch, create_machine_range, create_model, ensure_barcodes, format_duration, get_job, machine_ids_from_numbers, parse_payload, restore_database, scan, set_setting, status_label, verify_sqlite_backup
+from app.services import backup_database, create_assembly_worker, create_batch, create_machine_range, create_model, ensure_barcodes, format_duration, get_job, machine_ids_from_numbers, parse_payload, restore_database, scan, set_assembly_worker_active, set_setting, status_label, verify_sqlite_backup
 
 
 def setup_data(app):
@@ -64,6 +65,7 @@ def test_job_create_manual_selection_creates_expected_batch(client, app):
     form_text = form.get_data(as_text=True)
     assert "起始流水號" in form_text
     assert "本批台數" in form_text
+    assert "HR-255 — 製號字首：E" in form_text
     for removed in ("工單號", "產品批號", "製程", "計畫數量", "機台數字"):
         assert removed not in form_text
     response = client.post("/jobs", data={
@@ -75,9 +77,26 @@ def test_job_create_manual_selection_creates_expected_batch(client, app):
     })
     assert response.status_code == 302
     with app.app_context():
-        jobs = get_db().execute("SELECT product_serial,machine_id,planned_qty,manufacturing_year FROM job_run ORDER BY id").fetchall()
+        jobs = get_db().execute("SELECT product_serial,machine_id,machine_no_snapshot,planned_qty,manufacturing_year FROM job_run ORDER BY id").fetchall()
         assert [row["product_serial"] for row in jobs] == [f"E27-{i}" for i in range(10, 20)]
-        assert all(row["machine_id"] is None and row["planned_qty"] is None and row["manufacturing_year"] == 2026 for row in jobs)
+        assert all(row["machine_id"] is None and row["machine_no_snapshot"] is None and row["planned_qty"] is None and row["manufacturing_year"] == 2026 for row in jobs)
+
+
+def test_machine_master_is_not_part_of_new_product_flow(client, app):
+    with app.app_context():
+        model_id = create_model("HR-255", "HR255")
+
+    home = client.get("/")
+    assert home.status_code == 200
+    assert "機台主檔" not in home.get_data(as_text=True)
+
+    form = client.get(f"/jobs/new?model_id={model_id}")
+    assert form.status_code == 200
+    assert "不需要先建立機台主檔" in form.get_data(as_text=True)
+
+    legacy_link = client.get("/machines")
+    assert legacy_link.status_code == 302
+    assert legacy_link.headers["Location"].endswith("/jobs/new")
 
 
 def test_job_create_invalid_manual_selection_does_not_create_partial_batch(client, app):
@@ -132,8 +151,140 @@ def test_report_filter_print_and_export_use_product_serial(client, app, tmp_path
         assert workbook["明細"]["B2"].value in {"E27-10", "E27-11"}
 
     preview = client.get(f"/batches/{batch_id}/print").get_data(as_text=True)
-    assert "E27-10" in preview and "E27-11" in preview
-    assert "2 台產品" in preview
+    assert '<strong>HR-255</strong>' in preview
+    assert 'class="thermal-details"' in preview
+    assert "E27-10~E27-11" in preview
+    assert '<span class="thermal-count">2台</span>' in preview
+    assert '<span class="thermal-worker">operator</span>' in preview
+    assert preview.index('<strong>HR-255</strong>') < preview.index('<span class="thermal-count">2台</span>') < preview.index('class="thermal-details"')
+    assert preview.count('class="barcode-card"') == 2
+    assert "開始" in preview and "結束" in preview
+    assert preview.index("<h3>開始</h3>") < preview.index("<h3>結束</h3>")
+    assert "製作年份" not in preview
+
+    report = client.get("/reports?model_name=HR-255").get_data(as_text=True)
+    assert "<td>HR-255</td>" in report
+    assert "<td>HR-255（HR255）</td>" not in report
+    assert "機型名稱" in report
+
+
+def test_long_model_prints_compact_quantity_on_first_line(client, app):
+    with app.app_context():
+        model_id = create_model("FHR-400C-540-HR400B-FA", "FHR400C540HR400BFA", serial_prefix="F")
+        batch_id, _ = create_batch(model_id, 2026, 1, 10, "王小明")
+        ensure_barcodes(batch_id)
+
+    preview = client.get(f"/batches/{batch_id}/print").get_data(as_text=True)
+    assert '<div class="thermal-model-line">' in preview
+    assert '<strong>FHR-400C-540-HR400B-FA</strong>' in preview
+    assert '<span class="thermal-count">10台</span>' in preview
+    assert preview.index('<strong>FHR-400C-540-HR400B-FA</strong>') < preview.index('<span class="thermal-count">10台</span>') < preview.index('class="thermal-details"')
+    assert '<span class="thermal-worker">王小明</span>' in preview
+
+
+def test_model_form_uses_name_without_separate_code(client, app):
+    form = client.get("/models").get_data(as_text=True)
+    assert 'name="model_code"' not in form
+    assert "名稱（代碼）" not in form
+
+    response = client.post("/models", data={"model_name": "AR-210", "serial_prefix": "C", "description": "test"})
+    assert response.status_code == 200
+    with app.app_context():
+        model = get_db().execute("SELECT * FROM model_master WHERE model_name='AR-210'").fetchone()
+        assert model["model_code"] == "AR-210"
+        batch_id, _ = create_batch(model["id"], 2026, 1, 1, "operator")
+        assert get_db().execute("SELECT product_serial FROM job_run WHERE batch_id=?", (batch_id,)).fetchone()[0] == "C27-01"
+
+    report = client.get("/reports?model_name=AR-210").get_data(as_text=True)
+    assert "<td>AR-210</td>" in report
+    assert "C27-01" in report
+    client.post("/models", data={"model_name": "AR-210", "serial_prefix": "C"})
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM model_master").fetchone()[0] == 1
+
+
+def test_renaming_legacy_model_keeps_code_and_existing_report_snapshot(client, app):
+    with app.app_context():
+        model_id = create_model("HR-255", "HR255")
+        create_batch(model_id, 2026, 1, 1, "operator")
+
+    response = client.post(f"/models/{model_id}/update", data={"model_name": "HR-255A", "serial_prefix": "E", "is_active": "1"})
+    assert response.status_code == 302
+    with app.app_context():
+        model = get_db().execute("SELECT model_name,model_code FROM model_master WHERE id=?", (model_id,)).fetchone()
+        assert (model["model_name"], model["model_code"]) == ("HR-255A", "HR255")
+        old = get_db().execute("SELECT model_name_snapshot,model_code_snapshot FROM job_run").fetchone()
+        assert (old["model_name_snapshot"], old["model_code_snapshot"]) == ("HR-255", "HR255")
+    assert "<td>HR-255</td>" in client.get("/reports?model_name=HR-255").get_data(as_text=True)
+    assert "<td>HR-255</td>" in client.get("/reports?model_code=HR255").get_data(as_text=True)
+
+
+def test_unused_model_can_be_deleted_after_backup_and_confirmation(client, app):
+    with app.app_context():
+        model_id = create_model("AR-210", serial_prefix="C")
+
+    page = client.get("/models").get_data(as_text=True)
+    assert f'/models/{model_id}/delete' in page
+    with client.session_transaction() as session:
+        token = session["model_delete_token"]
+
+    for data in (
+        {"expected_name": "AR-210"},
+        {"csrf_token": token, "expected_name": "other"},
+    ):
+        assert client.post(f"/models/{model_id}/delete", data=data).status_code == 302
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM model_master").fetchone()[0] == 1
+    assert list(Path(app.config["BACKUP_DIRECTORY"]).glob("intjr_backup_*.db")) == []
+
+    response = client.post(f"/models/{model_id}/delete", data={"csrf_token": token, "expected_name": "AR-210"})
+    assert response.status_code == 302
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM model_master").fetchone()[0] == 0
+        assert get_db().execute("SELECT COUNT(*) FROM audit_log WHERE action='delete' AND entity_type='model_master'").fetchone()[0] == 1
+    backups = list(Path(app.config["BACKUP_DIRECTORY"]).glob("intjr_backup_*.db"))
+    assert len(backups) == 1
+    assert verify_sqlite_backup(backups[0]) == backups[0]
+    with sqlite3.connect(backups[0]) as original:
+        assert original.execute("SELECT model_name FROM model_master").fetchone()[0] == "AR-210"
+
+
+def test_model_with_jobs_or_legacy_machines_cannot_be_deleted(client, app):
+    with app.app_context():
+        used_id = create_model("HR-255", "HR255")
+        create_batch(used_id, 2026, 1, 1, "operator")
+        legacy_id = create_model("AR-210", "AR210")
+        create_machine_range(legacy_id, "C", 1, 1, 2)
+
+    client.get("/models")
+    with client.session_transaction() as session:
+        token = session["model_delete_token"]
+    for model_id, name in ((used_id, "HR-255"), (legacy_id, "AR-210")):
+        response = client.post(f"/models/{model_id}/delete", data={"csrf_token": token, "expected_name": name}, follow_redirects=True)
+        assert "請改用停用" in response.get_data(as_text=True)
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM model_master").fetchone()[0] == 2
+        assert get_db().execute("SELECT COUNT(*) FROM job_run").fetchone()[0] == 1
+        assert get_db().execute("SELECT COUNT(*) FROM machine_master").fetchone()[0] == 1
+    assert list(Path(app.config["BACKUP_DIRECTORY"]).glob("intjr_backup_*.db")) == []
+
+
+def test_model_delete_aborts_when_backup_fails(client, app, monkeypatch):
+    with app.app_context():
+        model_id = create_model("AR-210", serial_prefix="C")
+    client.get("/models")
+    with client.session_transaction() as session:
+        token = session["model_delete_token"]
+
+    def fail_backup(_target_dir):
+        raise OSError("備份磁碟不可用")
+
+    monkeypatch.setattr("app.services.backup_database", fail_backup)
+    response = client.post(f"/models/{model_id}/delete", data={"csrf_token": token, "expected_name": "AR-210"}, follow_redirects=True)
+    assert "沒有刪除機型" in response.get_data(as_text=True)
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM model_master").fetchone()[0] == 1
+        assert get_db().execute("SELECT COUNT(*) FROM audit_log WHERE action='delete' AND entity_type='model_master'").fetchone()[0] == 0
 
 
 def test_v3_migration_preserves_legacy_job_and_foreign_keys(tmp_path):
@@ -164,6 +315,8 @@ def test_v3_migration_preserves_legacy_job_and_foreign_keys(tmp_path):
         assert get_db().execute("SELECT serial_prefix FROM model_master WHERE id=1").fetchone()[0] == "E"
         assert get_db().execute("PRAGMA foreign_key_check").fetchall() == []
         assert next(row["notnull"] for row in get_db().execute("PRAGMA table_info(job_run)") if row["name"] == "machine_id") == 0
+        assert next(row["notnull"] for row in get_db().execute("PRAGMA table_info(job_run)") if row["name"] == "machine_no_snapshot") == 0
+        assert get_db().execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 5
 
 
 def test_payload_round_trip_and_idempotent_scan(app):
@@ -256,6 +409,29 @@ def test_report_status_group_filters_created_and_finished(client, app):
     assert "E27-01" in finished.get_data(as_text=True)
 
 
+def test_report_operator_dropdown_includes_inactive_and_historical_names(client, app):
+    with app.app_context():
+        model_id = create_model("HR-255", "HR255")
+        create_assembly_worker("王小明")
+        create_assembly_worker("王小明二")
+        inactive_id = create_assembly_worker("李小華")
+        for number, name in enumerate(("王小明", "王小明二", "李小華", "歷史員"), start=1):
+            create_batch(model_id, 2026, number, 1, name)
+        set_assembly_worker_active(inactive_id, False)
+
+    page = client.get("/reports").get_data(as_text=True)
+    assert '<select name="operator_name">' in page
+    assert '<option value="">全部</option>' in page
+    for name in ("王小明", "王小明二", "李小華", "歷史員"):
+        assert f'<option value="{name}"' in page
+
+    filtered = client.get("/reports", query_string={"operator_name": "王小明"}).get_data(as_text=True)
+    assert '<option value="王小明" selected>王小明</option>' in filtered
+    assert "E27-01" in filtered
+    assert "E27-02" not in filtered
+    assert "共 1 筆產品" in filtered
+
+
 def test_backup_and_restore_are_verified(app, tmp_path):
     model_id, machine_ids = setup_data(app)
     with app.app_context():
@@ -263,4 +439,70 @@ def test_backup_and_restore_are_verified(app, tmp_path):
         assert verify_sqlite_backup(backup) == backup
         safety = restore_database(backup, app.config["DATABASE"], app.config["BACKUP_DIRECTORY"], "admin")
         assert safety.is_file()
+
+
+def test_debug_clear_rejects_missing_confirmation_and_master_dependencies(client, app):
+    with app.app_context():
+        model_id = create_model("HR-255", "HR255")
+        create_assembly_worker("王小明")
+        create_batch(model_id, 2026, 1, 1, "王小明")
+
+    page = client.get("/debug/clear")
+    assert page.status_code == 200
+    assert "1 批" in page.get_data(as_text=True)
+    with client.session_transaction() as session:
+        token = session["debug_clear_token"]
+
+    for data in (
+        {"items": "production", "confirmation": "清除"},
+        {"items": "production", "confirmation": "wrong", "csrf_token": token},
+        {"items": "models", "confirmation": "清除", "csrf_token": token},
+    ):
+        assert client.post("/debug/clear", data=data).status_code == 302
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM job_run").fetchone()[0] == 1
+        assert get_db().execute("SELECT COUNT(*) FROM model_master").fetchone()[0] == 1
+        assert get_db().execute("SELECT COUNT(*) FROM audit_log WHERE action='debug_clear'").fetchone()[0] == 0
+
+    with app.app_context():
+        scan("invalid")
+    assert client.post("/debug/clear", data={"items": "scans", "confirmation": "清除", "csrf_token": token}).status_code == 302
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM scan_event").fetchone()[0] == 0
+        assert get_db().execute("SELECT COUNT(*) FROM job_run").fetchone()[0] == 1
+
+
+def test_debug_clear_selected_data_has_recoverable_backup(client, app):
+    with app.app_context():
+        model_id = create_model("HR-255", "HR255")
+        create_machine_range(model_id, "E", 1, 1, 2)
+        create_assembly_worker("王小明")
+        batch_id, _ = create_batch(model_id, 2026, 1, 2, "王小明")
+        ensure_barcodes(batch_id)
+        scan("invalid")
+
+    client.get("/debug/clear")
+    with client.session_transaction() as session:
+        token = session["debug_clear_token"]
+    response = client.post("/debug/clear", data={
+        "items": ["production", "workers", "models"],
+        "confirmation": "清除",
+        "csrf_token": token,
+    })
+    assert response.status_code == 302
+    with app.app_context():
+        db = get_db()
+        for table in ("production_batch", "job_run", "barcode_record", "scan_event", "assembly_worker", "model_master", "machine_master"):
+            assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM app_settings").fetchone()[0] == 2
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+        log = db.execute("SELECT details FROM audit_log WHERE action='debug_clear'").fetchone()
+        assert log is not None
+
+    backups = list(Path(app.config["BACKUP_DIRECTORY"]).glob("intjr_backup_*.db"))
+    assert len(backups) == 1
+    assert verify_sqlite_backup(backups[0]) == backups[0]
+    with sqlite3.connect(backups[0]) as original:
+        assert original.execute("SELECT COUNT(*) FROM job_run").fetchone()[0] == 2
+        assert original.execute("SELECT COUNT(*) FROM model_master").fetchone()[0] == 1
 

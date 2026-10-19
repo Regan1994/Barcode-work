@@ -5,10 +5,10 @@
   <label>機型
     <select name="model_id" required onchange="location='{{ url_for('main.job_new') }}?model_id='+this.value">
       <option value="">請選擇</option>
-      {% for model in models %}<option value="{{ model.id }}" {% if selected_model|string == model.id|string %}selected{% endif %}>{{ model.model_name }} ({{ model.serial_prefix or '未設定字首' }})</option>{% endfor %}
+      {% for model in models %}<option value="{{ model.id }}" {% if selected_model|string == model.id|string %}selected{% endif %}>{{ model.model_name }} — {% if model.serial_prefix %}製號字首：{{ model.serial_prefix }}{% else %}未設定製號字首{% endif %}</option>{% endfor %}
     </select>
   </label>
-  <p class="muted">製號格式：機型製號字首 + 年號（製作年份 + 1）+ 流水號，例如 HR-255 在 2026 年製作，製號為 E27-10。</p>
+  <p class="muted">製號格式：機型製號字首 + 年號（製作年份 + 1）+ 流水號，例如 HR-255 在 2026 年製作，製號為 E27-10。本流程不需要先建立機台主檔。</p>
   <div class="grid three">
     <label>製作年份<input type="number" name="manufacturing_year" min="2000" max="2099" value="{{ current_year }}" required></label>
     <label>起始流水號<input type="number" name="starting_number" min="1" value="1" required></label>

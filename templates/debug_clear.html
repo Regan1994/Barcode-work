@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>清除除錯資料</h1>
+<section class="panel form-narrow">
+  <p>勾選要清除的內容。按下清除後，系統會先建立完整資料庫備份，再刪除所選資料。</p>
+  <form method="post" action="{{ url_for('main.debug_clear') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="check"><input type="checkbox" name="items" value="production"> 報工批次與條碼（{{ counts.production_batch }} 批、{{ counts.job_run }} 筆產品、{{ counts.barcode_record }} 筆條碼；會一併清除掃描紀錄）</label>
+    <label class="check"><input type="checkbox" name="items" value="scans"> 僅清除掃描紀錄（{{ counts.scan_event }} 筆）</label>
+    <label class="check"><input type="checkbox" name="items" value="workers"> 組裝人員（{{ counts.assembly_worker }} 人）</label>
+    <label class="check"><input type="checkbox" name="items" value="models"> 機型與舊機台（{{ counts.model_master }} 個機型、{{ counts.machine_master }} 筆舊機台）</label>
+    <p class="muted">保留報工時，不能清除組裝人員或機型。系統設定、稽核紀錄和既有備份不在清除範圍內。</p>
+    <label>請輸入「清除」確認<input name="confirmation" required autocomplete="off" placeholder="清除"></label>
+    <button class="button primary" type="submit">建立備份並清除所選資料</button>
+  </form>
+</section>
+{% endblock %}
