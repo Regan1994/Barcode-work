@@ -1,3 +1,12 @@
 {% extends 'base.html' %}
-{% block content %}<h1>掃描報工</h1><section class="panel scan-panel"><p class="muted">USB HID 掃描器送出 Enter 後會自動送出；游標會維持在輸入框。可貼上 payload 進行測試。</p><form method="post" id="scan-form"><label>操作者<input name="operator_name" value="scanner"></label><label>條碼輸入<input id="payload" name="payload" autofocus autocomplete="off" placeholder="等待掃描…"></label><button class="button primary">送出掃描</button></form>{% if result %}<div class="scan-result {{ result.result }}"><strong>{{ result.result }}</strong><span>{{ result.message }}</span><small>{{ result.scanned_at }}</small></div>{% endif %}</section>{% endblock %}
-
+{% block content %}
+<h1>報工掃描</h1>
+<section class="panel scan-panel">
+  <p class="muted">USB HID 掃描器送出 Enter 後會自動送出；游標會維持在輸入框。可貼上 payload 進行測試。</p>
+  <form method="post" id="scan-form">
+    <label>條碼輸入<input id="payload" name="payload" autofocus autocomplete="off" placeholder="等待掃描…"></label>
+    <button class="button primary">送出掃描</button>
+  </form>
+  {% if result %}<div class="scan-result {{ result.result }}"><strong>{{ result.result }}</strong><span>{{ result.message }}</span><small>掃描時間：{{ format_datetime(result.scanned_at) }}</small><small>掃描內容：<code>{{ result.payload }}</code></small></div>{% endif %}
+</section>
+{% endblock %}

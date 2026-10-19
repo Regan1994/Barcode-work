@@ -4,7 +4,7 @@
 <div class="print-toolbar">
   <div>
     <h1>批次列印預覽</h1>
-    <p>批次號：<code>{{ batch.batch_no }}</code>　組裝人員：{{ batch.operator_name }}　建立時間：{{ batch.created_at }}</p>
+    <p>批次號：<code>{{ batch.batch_no }}</code>　{% if batch.assembly_stage %}組裝階段：{{ batch.assembly_stage }}　{% endif %}組裝人員：{{ batch.operator_name }}　建立時間：{{ format_datetime(batch.created_at) }}</p>
   </div>
   <button class="button primary" onclick="window.print()">列印</button>
 </div>
@@ -16,6 +16,7 @@
     <div class="thermal-heading">
       <div class="thermal-model-line">
         <strong>{{ jobs[0].model_name_snapshot }}</strong>
+        {% if batch.assembly_stage %}<span class="thermal-stage">{{ batch.assembly_stage }}</span>{% endif %}
         <span class="thermal-count">{{ jobs|length }}台</span>
       </div>
       <div class="thermal-details">
@@ -38,6 +39,7 @@
       <div class="thermal-heading">
         <div class="thermal-model-line">
           <strong>{{ job.model_name_snapshot }}</strong>
+          {% if batch.assembly_stage %}<span class="thermal-stage">{{ batch.assembly_stage }}</span>{% endif %}
           <span class="thermal-count">1台</span>
         </div>
         <div class="thermal-details">

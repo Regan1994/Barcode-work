@@ -9,7 +9,7 @@ from flask import Blueprint, current_app, flash, jsonify, redirect, render_templ
 
 from .barcode import code128_svg
 from .db import get_db
-from .services import ALLOWED_SEMANTICS, DEBUG_CLEAR_CHOICES, backup_database, clear_debug_data, correct_actual_qty, create_assembly_worker, create_batch, create_model, debug_clear_counts, delete_model, ensure_barcodes, export_xlsx, get_assembly_worker, get_batch, get_job, get_setting, list_assembly_workers, list_models, list_recent_batches, list_report_operators, parse_payload, query_report, restore_database, scan, set_assembly_worker_active, set_setting, update_model
+from .services import ASSEMBLY_STAGES, DEBUG_CLEAR_CHOICES, backup_database, clear_debug_data, correct_actual_qty, create_assembly_worker, create_batch, create_model, debug_clear_counts, delete_batch, delete_model, ensure_barcodes, export_xlsx, get_assembly_worker, get_batch, get_job, is_five_axis_model, list_assembly_workers, list_models, list_recent_batches, list_report_operators, parse_payload, query_report, restore_database, scan, set_assembly_worker_active, update_model
 
 bp = Blueprint("main", __name__)
 
@@ -114,7 +114,9 @@ def assembly_worker_status(worker_id):
 @bp.get("/jobs/new")
 def job_new():
     model_id = request.args.get("model_id")
-    return render_template("job_new.html", models=list_models(True), workers=list_assembly_workers(True), selected_model=model_id, current_year=datetime.now().year)
+    models = list_models(True)
+    selected = next((model for model in models if str(model["id"]) == str(model_id)), None)
+    return render_template("job_new.html", models=models, workers=list_assembly_workers(True), selected_model=model_id, selected_model_record=selected, is_five_axis=bool(selected and is_five_axis_model(selected)), assembly_stages=ASSEMBLY_STAGES, current_year=datetime.now().year)
 
 
 @bp.post("/jobs")
@@ -124,7 +126,7 @@ def job_create():
         worker = get_assembly_worker(request.form.get("operator_name", ""))
         if not worker:
             raise ValueError("請先選擇有效的組裝人員；如清單沒有該人員，請先新增組裝人員")
-        batch_id, _ = create_batch(model_id, request.form.get("manufacturing_year"), request.form.get("starting_number"), request.form.get("product_count"), worker["name"])
+        batch_id, _ = create_batch(model_id, request.form.get("manufacturing_year"), request.form.get("starting_number"), request.form.get("product_count"), worker["name"], request.form.get("assembly_stage"))
         ensure_barcodes(batch_id)
         return redirect(url_for("main.print_batch", batch_id=batch_id))
     except (ValueError, KeyError) as exc:
@@ -144,14 +146,40 @@ def print_batch(batch_id):
 
 @bp.get("/batches/recent")
 def recent_batches():
-    return render_template("batches.html", batches=list_recent_batches())
+    token = session.get("batch_delete_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["batch_delete_token"] = token
+    return render_template("batches.html", batches=list_recent_batches(), csrf_token=token)
+
+
+@bp.post("/batches/<batch_id>/delete")
+def batch_delete(batch_id):
+    token = session.get("batch_delete_token", "")
+    if not token or not hmac.compare_digest(token, request.form.get("csrf_token", "")):
+        flash("刪除確認已失效，請重新開啟最近批次", "error")
+        return redirect(url_for("main.recent_batches"))
+    try:
+        backup, removed = delete_batch(
+            batch_id,
+            request.form.get("expected_batch_id", ""),
+            request.form.get("confirmation", ""),
+            current_app.config["BACKUP_DIRECTORY"],
+        )
+        flash(f"批次已刪除；已先備份至 {backup.name}。刪除筆數：{sum(removed.values())}", "success")
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        flash(f"沒有刪除批次：{exc}", "error")
+    return redirect(url_for("main.recent_batches"))
 
 
 @bp.route("/scan", methods=["GET", "POST"])
 def scan_page():
     if request.method == "POST":
-        return render_home(scan(request.form.get("payload", ""), "scanner"))
-    return redirect(url_for("main.index"))
+        payload = request.form.get("payload", "")
+        result = scan(payload, "scanner")
+        result["payload"] = payload
+        return render_template("scan.html", result=result)
+    return render_template("scan.html", result=None)
 
 
 @bp.post("/api/scan")
@@ -188,16 +216,9 @@ def quantity_update(job_run_id):
     return redirect(url_for("main.reports"))
 
 
-@bp.route("/settings", methods=["GET", "POST"])
+@bp.get("/settings")
 def settings():
-    if request.method == "POST":
-        try:
-            set_setting("number_semantics", request.form.get("number_semantics", "unknown"), request.form.get("operator_name", "admin"))
-            set_setting("batch_scan_mode", request.form.get("batch_scan_mode", "batch"), request.form.get("operator_name", "admin"))
-            flash("設定已保存；未確認語意仍可維持 unknown", "success")
-        except ValueError as exc:
-            flash(str(exc), "error")
-    return render_template("settings.html", number_semantics=get_setting("number_semantics", "unknown"), batch_scan_mode=get_setting("batch_scan_mode", "batch"), semantics=ALLOWED_SEMANTICS)
+    return render_template("settings.html")
 
 
 @bp.route("/debug/clear", methods=["GET", "POST"])

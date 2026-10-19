@@ -5,7 +5,7 @@ import pytest
 
 from app import create_app as build_app
 from app.db import get_db
-from app.services import backup_database, create_assembly_worker, create_batch, create_machine_range, create_model, ensure_barcodes, format_duration, get_job, machine_ids_from_numbers, parse_payload, restore_database, scan, set_assembly_worker_active, set_setting, status_label, verify_sqlite_backup
+from app.services import backup_database, create_assembly_worker, create_batch, create_machine_range, create_model, ensure_barcodes, format_datetime, format_duration, get_job, machine_ids_from_numbers, parse_payload, restore_database, scan, set_assembly_worker_active, set_setting, status_label, verify_sqlite_backup
 
 
 def setup_data(app):
@@ -82,6 +82,68 @@ def test_job_create_manual_selection_creates_expected_batch(client, app):
         assert all(row["machine_id"] is None and row["machine_no_snapshot"] is None and row["planned_qty"] is None and row["manufacturing_year"] == 2026 for row in jobs)
 
 
+def test_five_axis_stage_is_required_and_standard_four_axis_is_disabled(client, app):
+    with app.app_context():
+        standard_id = create_model("HR-255", "HR255")
+        five_axis_id = create_model("FHR-255CL", "FHR255CL", serial_prefix="F")
+        create_assembly_worker("operator")
+
+    standard_form = client.get(f"/jobs/new?model_id={standard_id}").get_data(as_text=True)
+    assert '<select name="assembly_stage" disabled>' in standard_form
+    assert "不適用（標準四軸）" in standard_form
+
+    five_axis_form = client.get(f"/jobs/new?model_id={five_axis_id}").get_data(as_text=True)
+    assert '<select name="assembly_stage" required>' in five_axis_form
+    for label in ("旋轉軸", "傾斜軸", "尾座", "組合"):
+        assert label in five_axis_form
+
+    missing_stage = client.post("/jobs", data={
+        "model_id": str(five_axis_id),
+        "manufacturing_year": "2026",
+        "starting_number": "1",
+        "product_count": "1",
+        "operator_name": "operator",
+    })
+    assert missing_stage.status_code == 302
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM production_batch").fetchone()[0] == 0
+
+    created = client.post("/jobs", data={
+        "model_id": str(five_axis_id),
+        "manufacturing_year": "2026",
+        "starting_number": "1",
+        "product_count": "1",
+        "operator_name": "operator",
+        "assembly_stage": "旋",
+    })
+    assert created.status_code == 302
+    with app.app_context():
+        batch_id = get_db().execute("SELECT batch_id FROM production_batch").fetchone()["batch_id"]
+        batch = get_db().execute("SELECT assembly_stage FROM production_batch").fetchone()
+        assert batch["assembly_stage"] == "旋"
+        ensure_barcodes(batch_id)
+        barcode = get_db().execute("SELECT payload FROM barcode_record WHERE batch_id=? AND barcode_type='START'", (batch_id,)).fetchone()
+        assert parse_payload(barcode["payload"])["assembly_stage"] == "旋"
+
+    preview = client.get(f"/batches/{batch_id}/print").get_data(as_text=True)
+    assert "組裝階段：旋" in preview
+
+
+def test_five_axis_same_serial_can_be_created_once_per_stage(app):
+    with app.app_context():
+        model_id = create_model("FHR-255CL", "FHR255CL", serial_prefix="SS")
+        rotate_batch, _ = create_batch(model_id, 2026, 1, 1, "operator", "旋")
+        tilt_batch, _ = create_batch(model_id, 2026, 1, 1, "operator", "傾")
+
+        stages = get_db().execute(
+            "SELECT product_serial,assembly_stage FROM job_run ORDER BY id"
+        ).fetchall()
+        assert [(row["product_serial"], row["assembly_stage"]) for row in stages] == [("SS27-01", "旋"), ("SS27-01", "傾")]
+        with pytest.raises(ValueError, match="製號已存在"):
+            create_batch(model_id, 2026, 1, 1, "operator", "旋")
+        assert rotate_batch != tilt_batch
+
+
 def test_machine_master_is_not_part_of_new_product_flow(client, app):
     with app.app_context():
         model_id = create_model("HR-255", "HR255")
@@ -97,6 +159,36 @@ def test_machine_master_is_not_part_of_new_product_flow(client, app):
     legacy_link = client.get("/machines")
     assert legacy_link.status_code == 302
     assert legacy_link.headers["Location"].endswith("/jobs/new")
+
+
+def test_settings_hide_legacy_machine_semantics(client):
+    page = client.get("/settings")
+    assert page.status_code == 200
+    text = page.get_data(as_text=True)
+    assert "舊機台編號語意" not in text
+    assert "number_semantics" not in text
+    assert "安全還原" in text
+
+
+def test_scan_has_independent_page(client, app):
+    response = client.get("/scan")
+    assert response.status_code == 200
+    text = response.get_data(as_text=True)
+    assert "<h1>報工掃描</h1>" in text
+    assert 'id="scan-form"' in text
+    assert 'name="operator_name"' not in text
+    assert "等待掃描" in text
+
+    model_id, _ = setup_data(app)
+    with app.app_context():
+        batch_id, _ = create_batch(model_id, 2026, 1, 1, "operator")
+        ensure_barcodes(batch_id)
+        payload = get_db().execute("SELECT payload FROM barcode_record WHERE batch_id=? AND barcode_type='START'", (batch_id,)).fetchone()["payload"]
+    scanned = client.post("/scan", data={"payload": payload})
+    assert scanned.status_code == 200
+    scanned_text = scanned.get_data(as_text=True)
+    assert "success" in scanned_text
+    assert f"掃描內容：<code>{payload}</code>" in scanned_text
 
 
 def test_job_create_invalid_manual_selection_does_not_create_partial_batch(client, app):
@@ -194,10 +286,48 @@ def test_recent_batches_reprint_reuses_original_batch_and_barcodes(client, app):
         assert [(row["barcode_type"], row["payload"]) for row in repeated_records] == [(row["barcode_type"], row["payload"]) for row in original_records]
 
 
+def test_recent_batch_can_be_deleted_after_backup_and_confirmation(client, app):
+    model_id, _ = setup_data(app)
+    with app.app_context():
+        batch_id, _ = create_batch(model_id, 2026, 10, 2, "operator")
+        ensure_barcodes(batch_id)
+        start = get_db().execute("SELECT payload FROM barcode_record WHERE batch_id=? AND barcode_type='START'", (batch_id,)).fetchone()["payload"]
+        assert scan(start)["result"] == "success"
+
+    recent = client.get("/batches/recent")
+    assert f"/batches/{batch_id}/delete" in recent.get_data(as_text=True)
+    with client.session_transaction() as session:
+        token = session["batch_delete_token"]
+
+    assert client.post(f"/batches/{batch_id}/delete", data={"expected_batch_id": batch_id, "confirmation": "刪除"}).status_code == 302
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM production_batch WHERE batch_id=?", (batch_id,)).fetchone()[0] == 1
+
+    response = client.post(f"/batches/{batch_id}/delete", data={
+        "csrf_token": token,
+        "expected_batch_id": batch_id,
+        "confirmation": "刪除",
+    })
+    assert response.status_code == 302
+    with app.app_context():
+        db = get_db()
+        assert db.execute("SELECT COUNT(*) FROM production_batch WHERE batch_id=?", (batch_id,)).fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM job_run WHERE batch_id=?", (batch_id,)).fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM barcode_record WHERE batch_id=?", (batch_id,)).fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM scan_event").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM audit_log WHERE action='delete' AND entity_type='production_batch' AND entity_id=?", (batch_id,)).fetchone()[0] == 1
+
+    backups = list(Path(app.config["BACKUP_DIRECTORY"]).glob("intjr_backup_*.db"))
+    assert len(backups) == 1
+    assert verify_sqlite_backup(backups[0]) == backups[0]
+    with sqlite3.connect(backups[0]) as original:
+        assert original.execute("SELECT COUNT(*) FROM production_batch WHERE batch_id=?", (batch_id,)).fetchone()[0] == 1
+
+
 def test_long_model_prints_compact_quantity_on_first_line(client, app):
     with app.app_context():
         model_id = create_model("FHR-400C-540-HR400B-FA", "FHR400C540HR400BFA", serial_prefix="F")
-        batch_id, _ = create_batch(model_id, 2026, 1, 10, "王小明")
+        batch_id, _ = create_batch(model_id, 2026, 1, 10, "王小明", "旋")
         ensure_barcodes(batch_id)
 
     preview = client.get(f"/batches/{batch_id}/print").get_data(as_text=True)
@@ -342,7 +472,7 @@ def test_v3_migration_preserves_legacy_job_and_foreign_keys(tmp_path):
         assert get_db().execute("PRAGMA foreign_key_check").fetchall() == []
         assert next(row["notnull"] for row in get_db().execute("PRAGMA table_info(job_run)") if row["name"] == "machine_id") == 0
         assert next(row["notnull"] for row in get_db().execute("PRAGMA table_info(job_run)") if row["name"] == "machine_no_snapshot") == 0
-        assert get_db().execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 5
+        assert get_db().execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 7
 
 
 def test_payload_round_trip_and_idempotent_scan(app):
@@ -400,11 +530,13 @@ def test_dashboard_status_cards_and_report_duration(client, app):
         assert status_label("finished") == "已完成"
         assert format_duration(None, None, "created") == "-"
         assert format_duration("2026-10-16T08:00:00+00:00", "2026-10-17T09:05:06+00:00", "finished") == "1日 01:05:06"
+        assert format_datetime("2026-10-19T03:15:20+00:00") == "2026-10-19 11:15:20"
 
     home = client.get("/")
     assert home.status_code == 200
     assert b"href=\"/reports?status_group=incomplete\"" in home.data
     home_text = home.get_data(as_text=True)
+    assert 'href="/scan"' in home_text and "報工掃描" in home_text
     assert "未完成" in home_text
     assert "已完成" in home_text
 

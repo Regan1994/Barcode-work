@@ -1,21 +1,30 @@
 {% extends 'base.html' %}
 {% block content %}
 <h1>最近批次</h1>
-<p class="muted">保留最近建立的批次，貼紙損壞時可重新開啟原本的標籤預覽列印。重新列印不會建立新的製號或條碼。</p>
+<p class="muted">保留最近建立的批次，貼紙損壞時可重新開啟原本的標籤預覽列印。重新列印不會建立新的製號或條碼；刪除批次前會先建立資料庫備份。</p>
 <section class="panel table-wrap">
   <table>
-    <tr><th>建立時間</th><th>機型</th><th>製號範圍</th><th>台數</th><th>組裝人員</th><th>操作</th></tr>
+    <tr><th>建立時間</th><th>機型</th><th>組裝階段</th><th>製號範圍</th><th>台數</th><th>組裝人員</th><th>操作</th></tr>
     {% for batch in batches %}
     <tr>
-      <td>{{ batch.created_at }}</td>
+      <td>{{ format_datetime(batch.created_at) }}</td>
       <td>{{ batch.model_name }}</td>
+      <td>{{ batch.assembly_stage or '—' }}</td>
       <td>{{ batch.serial_range }}</td>
       <td>{{ batch.product_count }}</td>
       <td>{{ batch.operator_name }}</td>
-      <td><a class="button small" href="{{ url_for('main.print_batch', batch_id=batch.batch_id) }}">重新列印</a></td>
+      <td>
+        <a class="button small" href="{{ url_for('main.print_batch', batch_id=batch.batch_id) }}">重新列印</a>
+        <form method="post" action="{{ url_for('main.batch_delete', batch_id=batch.batch_id) }}" style="display:inline" onsubmit="return confirm('確定刪除這個報工批次？製號、條碼與相關掃描紀錄都會移除。');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="expected_batch_id" value="{{ batch.batch_id }}">
+          <input type="hidden" name="confirmation" value="刪除">
+          <button class="button small danger" type="submit">刪除</button>
+        </form>
+      </td>
     </tr>
     {% else %}
-    <tr><td colspan="6">目前沒有批次資料</td></tr>
+    <tr><td colspan="7">目前沒有批次資料</td></tr>
     {% endfor %}
   </table>
 </section>

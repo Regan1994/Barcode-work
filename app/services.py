@@ -4,7 +4,7 @@ import re
 import shutil
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .db import get_db, utc_now
@@ -19,12 +19,16 @@ STATUS_LABELS = {
     "cancelled": "已取消",
 }
 MODEL_SERIAL_PREFIXES = {"HR255": "E", "RC255": "ER", "AR210": "C", "AR170": "B", "RC210": "CR"}
+ASSEMBLY_STAGES = ("旋", "傾", "尾", "組")
+ASSEMBLY_STAGE_CODES = {"旋": "R", "傾": "T", "尾": "B", "組": "A"}
+ASSEMBLY_STAGE_BY_CODE = {code: stage for stage, code in ASSEMBLY_STAGE_CODES.items()}
 DEBUG_CLEAR_CHOICES = {
     "production": "報工批次與條碼",
     "scans": "掃描紀錄",
     "workers": "組裝人員",
     "models": "機型與舊機台",
 }
+TAIPEI_TZ = timezone(timedelta(hours=8), name="Asia/Taipei")
 
 
 def infer_serial_prefix(model_name, model_code):
@@ -33,6 +37,21 @@ def infer_serial_prefix(model_name, model_code):
         if key in MODEL_SERIAL_PREFIXES:
             return MODEL_SERIAL_PREFIXES[key]
     return ""
+
+
+def is_five_axis_model(model):
+    return (model["model_name"] or "").strip().upper().startswith("F")
+
+
+def validate_assembly_stage(model, assembly_stage):
+    assembly_stage = (assembly_stage or "").strip()
+    if is_five_axis_model(model):
+        if assembly_stage not in ASSEMBLY_STAGES:
+            raise ValueError("五軸機型必須選擇組裝階段：旋轉軸、傾斜軸、尾座或組合")
+        return assembly_stage
+    if assembly_stage:
+        raise ValueError("標準四軸機型不可選擇組裝階段")
+    return None
 
 
 def new_id():
@@ -59,6 +78,19 @@ def format_duration(started_at, finished_at, status=None):
     minutes, seconds = divmod(remainder, 60)
     duration = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     return f"{days}日 {duration}" if days else duration
+
+
+def format_datetime(value):
+    """Format stored UTC timestamps for the Taiwan-based user interface."""
+    if not value:
+        return "-"
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def validate_text(value, field, required=True):
@@ -364,6 +396,7 @@ def list_recent_batches(limit=20):
                 "batch_id": batch["batch_id"],
                 "created_at": batch["created_at"],
                 "model_name": model_names[0] if model_names else "-",
+                "assembly_stage": batch["assembly_stage"],
                 "serial_range": serial_range,
                 "product_count": len(jobs),
                 "operator_name": batch["operator_name"],
@@ -372,11 +405,59 @@ def list_recent_batches(limit=20):
     return recent
 
 
+def delete_batch(batch_id, expected_batch_id, confirmation, backup_dir, operator_name="admin"):
+    batch_id = validate_text(batch_id, "批次識別碼")
+    if batch_id != validate_text(expected_batch_id, "刪除確認"):
+        raise ValueError("刪除確認與批次不一致")
+    if confirmation != "刪除":
+        raise ValueError("請輸入「刪除」確認")
+
+    db = get_db()
+    batch = get_batch(batch_id)
+    if not batch:
+        raise ValueError("找不到報工批次")
+    job_ids = [row["job_run_id"] for row in db.execute("SELECT job_run_id FROM job_run WHERE batch_id=?", (batch_id,)).fetchall()]
+    barcode_count = db.execute(
+        "SELECT COUNT(*) FROM barcode_record WHERE batch_id=? OR job_run_id IN (SELECT job_run_id FROM job_run WHERE batch_id=?)",
+        (batch_id, batch_id),
+    ).fetchone()[0]
+    scan_count = db.execute(
+        "SELECT COUNT(*) FROM scan_event WHERE payload IN (SELECT payload FROM barcode_record WHERE batch_id=? OR job_run_id IN (SELECT job_run_id FROM job_run WHERE batch_id=?)) OR job_run_id IN (SELECT job_run_id FROM job_run WHERE batch_id=?)",
+        (batch_id, batch_id, batch_id),
+    ).fetchone()[0]
+
+    # Create a verified snapshot before any DELETE statement.
+    backup = backup_database(backup_dir)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(
+            "DELETE FROM scan_event WHERE payload IN (SELECT payload FROM barcode_record WHERE batch_id=? OR job_run_id IN (SELECT job_run_id FROM job_run WHERE batch_id=?)) OR job_run_id IN (SELECT job_run_id FROM job_run WHERE batch_id=?)",
+            (batch_id, batch_id, batch_id),
+        )
+        db.execute("DELETE FROM barcode_record WHERE batch_id=? OR job_run_id IN (SELECT job_run_id FROM job_run WHERE batch_id=?)", (batch_id, batch_id))
+        db.execute("DELETE FROM job_run WHERE batch_id=?", (batch_id,))
+        db.execute("DELETE FROM production_batch WHERE batch_id=?", (batch_id,))
+        if db.execute("PRAGMA foreign_key_check").fetchall():
+            raise ValueError("資料關聯檢查失敗，刪除已取消")
+        add_audit(
+            "delete",
+            "production_batch",
+            batch_id,
+            {"job_count": len(job_ids), "barcode_count": barcode_count, "scan_count": scan_count, "backup": str(backup)},
+            operator_name,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return backup, {"job_run": len(job_ids), "barcode_record": barcode_count, "scan_event": scan_count, "production_batch": 1}
+
+
 def get_job(job_run_id):
     return get_db().execute("SELECT * FROM job_run WHERE job_run_id=?", (job_run_id,)).fetchone()
 
 
-def create_batch(model_id, manufacturing_year, starting_number, product_count, operator_name):
+def create_batch(model_id, manufacturing_year, starting_number, product_count, operator_name, assembly_stage=None):
     try:
         manufacturing_year = int(manufacturing_year)
         starting_number = int(starting_number)
@@ -390,13 +471,23 @@ def create_batch(model_id, manufacturing_year, starting_number, product_count, o
     model = db.execute("SELECT * FROM model_master WHERE id=? AND is_active=1", (model_id,)).fetchone()
     if not model:
         raise ValueError("機型不存在或已停用")
+    assembly_stage = validate_assembly_stage(model, assembly_stage)
     serial_prefix = model["serial_prefix"] or infer_serial_prefix(model["model_name"], model["model_code"])
     if not serial_prefix:
         raise ValueError("此機型尚未設定製號字首，請至機型主檔設定")
     year_marker = f"{(manufacturing_year + 1) % 100:02d}"
     serials = [f"{serial_prefix}{year_marker}-{number:02d}" for number in range(starting_number, starting_number + product_count)]
     placeholders = ",".join("?" for _ in serials)
-    used = db.execute(f"SELECT product_serial FROM job_run WHERE product_serial IN ({placeholders})", serials).fetchall()
+    if assembly_stage:
+        used = db.execute(
+            f"SELECT product_serial FROM job_run WHERE product_serial IN ({placeholders}) AND assembly_stage=?",
+            [*serials, assembly_stage],
+        ).fetchall()
+    else:
+        used = db.execute(
+            f"SELECT product_serial FROM job_run WHERE product_serial IN ({placeholders}) AND assembly_stage IS NULL",
+            serials,
+        ).fetchall()
     legacy_used = db.execute(f"SELECT machine_no_snapshot FROM job_run WHERE machine_no_snapshot IN ({placeholders})", serials).fetchall()
     if used or legacy_used:
         duplicates = {row[0] for row in [*used, *legacy_used]}
@@ -404,13 +495,13 @@ def create_batch(model_id, manufacturing_year, starting_number, product_count, o
     now = utc_now()
     batch_id = new_id()
     batch_no = "B-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + batch_id[:6].upper()
-    db.execute("INSERT INTO production_batch(batch_id,batch_no,selection_mode,operator_name,created_at) VALUES(?,?,?,?,?)", (batch_id, batch_no, "serial_range", operator_name, now))
+    db.execute("INSERT INTO production_batch(batch_id,batch_no,selection_mode,assembly_stage,operator_name,created_at) VALUES(?,?,?,?,?,?)", (batch_id, batch_no, "serial_range", assembly_stage, operator_name, now))
     job_ids = []
     for serial in serials:
         job_id = new_id()
         job_ids.append(job_id)
-        db.execute("INSERT INTO job_run(job_run_id,batch_id,model_id,machine_id,product_serial,manufacturing_year,model_name_snapshot,model_code_snapshot,machine_no_snapshot,number_semantics_snapshot,planned_qty,status,operator_name,created_at,updated_at) VALUES(?,?,?,NULL,?,?,?,?,NULL,'unknown',NULL,'created',?,?,?)", (job_id, batch_id, model_id, serial, manufacturing_year, model["model_name"], model["model_code"], operator_name, now, now))
-    add_audit("create", "production_batch", batch_id, {"job_count": len(job_ids), "manufacturing_year": manufacturing_year, "serials": serials}, operator_name)
+        db.execute("INSERT INTO job_run(job_run_id,batch_id,model_id,machine_id,product_serial,manufacturing_year,assembly_stage,model_name_snapshot,model_code_snapshot,machine_no_snapshot,number_semantics_snapshot,planned_qty,status,operator_name,created_at,updated_at) VALUES(?,?,?,NULL,?,?,?,?,?,NULL,'unknown',NULL,'created',?,?,?)", (job_id, batch_id, model_id, serial, manufacturing_year, assembly_stage, model["model_name"], model["model_code"], operator_name, now, now))
+    add_audit("create", "production_batch", batch_id, {"job_count": len(job_ids), "manufacturing_year": manufacturing_year, "assembly_stage": assembly_stage, "serials": serials}, operator_name)
     db.commit()
     return batch_id, job_ids
 
@@ -429,6 +520,11 @@ def make_payload(kind, job):
 
 
 def make_batch_payload(kind, batch, jobs):
+    if batch["assembly_stage"]:
+        prefix = "I2" + ("S" if kind == "START" else "F")
+        token = compact_batch_token(batch["batch_id"])
+        stage_code = ASSEMBLY_STAGE_CODES[batch["assembly_stage"]]
+        return prefix + token + stage_code + checksum_for([prefix, token, stage_code])[:4]
     prefix = "I1" + ("S" if kind == "START" else "F")
     token = compact_batch_token(batch["batch_id"])
     return prefix + token + checksum_for([prefix, token])[:4]
@@ -436,6 +532,11 @@ def make_batch_payload(kind, batch, jobs):
 
 def parse_payload(payload):
     raw = (payload or "").strip()
+    if len(raw) == 16 and raw[:2] == "I2" and raw[2] in {"S", "F"}:
+        prefix, token, stage_code, check = raw[:3], raw[3:11], raw[11], raw[12:]
+        if stage_code not in ASSEMBLY_STAGE_BY_CODE or checksum_for([prefix, token, stage_code])[:4] != check:
+            raise ValueError("條碼 checksum 或組裝階段不正確")
+        return {"system": "INTJR", "version": "2", "type": "START" if raw[2] == "S" else "FINISH", "batch_token": token, "assembly_stage": ASSEMBLY_STAGE_BY_CODE[stage_code], "checksum": check, "scope": "batch"}
     if len(raw) == 15 and raw[:2] == "I1" and raw[2] in {"S", "F"}:
         prefix, token, check = raw[:3], raw[3:11], raw[11:]
         if checksum_for([prefix, token])[:4] != check:
@@ -487,6 +588,8 @@ def scan(payload, operator_name="scanner"):
             if len(candidates) != 1:
                 raise ValueError("找不到相符的報工批次")
             batch_id = candidates[0]["batch_id"]
+            if parsed.get("assembly_stage") and candidates[0]["assembly_stage"] != parsed["assembly_stage"]:
+                raise ValueError("條碼組裝階段與報工批次不一致")
             jobs = db.execute("SELECT * FROM job_run WHERE batch_id=? ORDER BY id", (batch_id,)).fetchall()
             if not jobs:
                 raise ValueError("找不到相符的報工批次")
@@ -523,7 +626,7 @@ def scan(payload, operator_name="scanner"):
                 db.execute("UPDATE job_run SET status='started',started_at=?,updated_at=? WHERE job_run_id=?", (scanned_at, scanned_at, job["job_run_id"]))
                 result, message = "success", f"START 成功：{job['machine_no_snapshot']}"
             elif job["status"] == "started":
-                result, message = "duplicate", f"已於 {job['started_at']} START"
+                result, message = "duplicate", f"已於 {format_datetime(job['started_at'])} START"
             else:
                 result, message = "invalid", "此報工已完成或已取消"
         else:
@@ -533,7 +636,7 @@ def scan(payload, operator_name="scanner"):
             elif job["status"] == "created":
                 result, message = "invalid", "必須先掃描 START"
             elif job["status"] == "finished":
-                result, message = "duplicate", f"已於 {job['finished_at']} 完成"
+                result, message = "duplicate", f"已於 {format_datetime(job['finished_at'])} 完成"
             else:
                 result, message = "invalid", "此報工已取消"
         db.execute("INSERT INTO scan_event(event_id,payload,barcode_type,job_run_id,result,message,scanned_at,operator_name) VALUES(?,?,?,?,?,?,?,?)", (event_id, payload, kind, job["job_run_id"], result, message, scanned_at, operator_name))
@@ -610,7 +713,7 @@ def export_xlsx(rows, path):
         return "'" + value if value[:1] in {"=", "+", "-", "@"} else value
 
     for row in rows:
-        values = [row["model_name_snapshot"], row["product_serial"] or row["machine_no_snapshot"], status_label(row["status"]), row["started_at"], row["finished_at"], format_duration(row["started_at"], row["finished_at"], row["status"]), row["operator_name"]]
+        values = [row["model_name_snapshot"], row["product_serial"] or row["machine_no_snapshot"], status_label(row["status"]), format_datetime(row["started_at"]), format_datetime(row["finished_at"]), format_duration(row["started_at"], row["finished_at"], row["status"]), row["operator_name"]]
         ws.append([excel_value(v) for v in values])
     for cell in ws[1]:
         header_font = copy(cell.font)

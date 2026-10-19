@@ -11,14 +11,14 @@
 
   <article class="home-card home-scan-card">
     <p class="home-card-kicker">02 / 現場作業</p>
-    <h2>掃描報工</h2>
+    <h2>報工掃描</h2>
     <p class="home-card-description">先掃 START；整批產品完成後，再掃 FINISH。請使用 USB HID 即時上傳模式。</p>
     <form method="post" id="scan-form" action="{{ url_for('main.index') }}" class="home-scan-form">
       <label for="payload">掃描 START／FINISH 條碼</label>
       <input id="payload" name="payload" autofocus autocomplete="off" placeholder="等待掃描…" required>
       <button class="button primary home-card-action" type="submit">送出掃描</button>
     </form>
-    {% if scan_result %}<div class="scan-result {{ scan_result.result }}" role="status"><strong>{{ scan_result.result }}</strong><span>{{ scan_result.message }}</span><small>{{ scan_result.scanned_at }}</small></div>{% endif %}
+    {% if scan_result %}<div class="scan-result {{ scan_result.result }}" role="status"><strong>{{ scan_result.result }}</strong><span>{{ scan_result.message }}</span><small>{{ format_datetime(scan_result.scanned_at) }}</small></div>{% endif %}
   </article>
 
   <article class="home-card">

@@ -9,6 +9,19 @@
     </select>
   </label>
   <p class="muted">製號格式：機型製號字首 + 年號（製作年份 + 1）+ 流水號，例如 HR-255 在 2026 年製作，製號為 E27-10。本流程不需要先建立機台主檔。</p>
+  <label>組裝階段
+    <select name="assembly_stage" {% if is_five_axis %}required{% else %}disabled{% endif %}>
+      {% if is_five_axis %}
+      <option value="">請選擇</option>
+      {% for stage in assembly_stages %}
+      <option value="{{ stage }}">{% if stage == '旋' %}旋轉軸{% elif stage == '傾' %}傾斜軸{% elif stage == '尾' %}尾座{% else %}組合{% endif %}</option>
+      {% endfor %}
+      {% else %}
+      <option value="">不適用（標準四軸）</option>
+      {% endif %}
+    </select>
+    {% if is_five_axis %}<span class="muted">五軸機型需為每個階段各建立一個批次。</span>{% else %}<span class="muted">標準四軸不分組裝階段。</span>{% endif %}
+  </label>
   <div class="grid three">
     <label>製作年份<input type="number" name="manufacturing_year" min="2000" max="2099" value="{{ current_year }}" required></label>
     <label>起始流水號<input type="number" name="starting_number" min="1" value="1" required></label>

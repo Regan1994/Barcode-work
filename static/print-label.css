@@ -48,6 +48,7 @@
 }
 
 .thermal-count { flex: 0 0 auto; white-space: nowrap; }
+.thermal-stage { flex: 0 0 auto; white-space: nowrap; font-weight: 700; }
 
 .thermal-details {
   display: flex;

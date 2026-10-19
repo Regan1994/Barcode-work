@@ -6,7 +6,7 @@ from flask import Flask
 
 from config import Config
 from .db import close_db, init_db
-from .services import format_duration, status_label
+from .services import format_datetime, format_duration, status_label
 
 
 def create_app(test_config=None):
@@ -23,7 +23,7 @@ def create_app(test_config=None):
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         app.logger.addHandler(handler)
     app.logger.setLevel(logging.INFO)
-    app.jinja_env.globals.update(format_duration=format_duration, status_label=status_label)
+    app.jinja_env.globals.update(format_datetime=format_datetime, format_duration=format_duration, status_label=status_label)
     app.teardown_appcontext(close_db)
 
     with app.app_context():

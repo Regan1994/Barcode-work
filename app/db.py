@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS production_batch (
     batch_id TEXT NOT NULL UNIQUE,
     batch_no TEXT NOT NULL UNIQUE,
     selection_mode TEXT NOT NULL,
+    assembly_stage TEXT CHECK(assembly_stage IN ('旋','傾','尾','組') OR assembly_stage IS NULL),
     work_order_no TEXT,
     product_lot_no TEXT,
     process_name TEXT,
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS job_run (
     machine_id INTEGER REFERENCES machine_master(id),
     product_serial TEXT,
     manufacturing_year INTEGER,
+    assembly_stage TEXT CHECK(assembly_stage IN ('旋','傾','尾','組') OR assembly_stage IS NULL),
     model_name_snapshot TEXT NOT NULL,
     model_code_snapshot TEXT NOT NULL,
     machine_no_snapshot TEXT,
@@ -179,6 +181,10 @@ def init_db():
     migrate_product_serials(db)
     migrate_machine_snapshot(db)
     db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)", (5, utc_now()))
+    migrate_assembly_stage(db)
+    db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)", (6, utc_now()))
+    migrate_job_assembly_stage(db)
+    db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)", (7, utc_now()))
     if needs_batch_mode_migration:
         db.execute("UPDATE app_settings SET value='batch', updated_at=? WHERE key='batch_scan_mode'", (utc_now(),))
     db.execute(
@@ -311,4 +317,28 @@ def migrate_machine_snapshot(db):
         raise
     finally:
         db.execute("PRAGMA foreign_keys=ON")
+
+
+def migrate_assembly_stage(db):
+    """Add the optional assembly stage used by new five-axis batches."""
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(production_batch)")}
+    if "assembly_stage" not in columns:
+        db.execute("ALTER TABLE production_batch ADD COLUMN assembly_stage TEXT")
+
+
+def migrate_job_assembly_stage(db):
+    """Allow one product serial to have one job per five-axis stage."""
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(job_run)")}
+    if "assembly_stage" not in columns:
+        db.execute("ALTER TABLE job_run ADD COLUMN assembly_stage TEXT")
+    db.execute(
+        "UPDATE job_run SET assembly_stage=(SELECT assembly_stage FROM production_batch WHERE production_batch.batch_id=job_run.batch_id) WHERE assembly_stage IS NULL"
+    )
+    db.execute("DROP INDEX IF EXISTS uq_job_run_product_serial")
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_job_run_product_stage ON job_run(product_serial, assembly_stage) WHERE product_serial IS NOT NULL AND assembly_stage IS NOT NULL"
+    )
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_job_run_product_serial_standard ON job_run(product_serial) WHERE product_serial IS NOT NULL AND assembly_stage IS NULL"
+    )
 
