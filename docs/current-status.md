@@ -1,141 +1,49 @@
-# INTJR 條碼報工系統｜目前狀態與新對話交接
+# INTJR 條碼報工系統｜目前狀態
 
-更新日期：2026-10-16
+更新日期：2026-10-19
 
-## 專案位置
+## 專案與啟動
 
-```text
-C:\Users\TJR_\Documents\ChatGPT\報工
-```
-
-主要程式：
-
-- `app.py`：Flask 啟動入口
-- `app/services.py`：報工、條碼、掃描、報表、備份核心邏輯
-- `app/routes.py`：網頁路由
-- `app/db.py`：SQLite schema、migration、資料庫連線
-- `app/barcode.py`：Code128 SVG 產生器
-- `templates/`：網頁畫面
-- `static/`：CSS 與掃描頁 JavaScript
-- `instance/intjr.db`：本機資料庫
-- `instance/app.log`：本機記錄檔
-- `docs/decision-log.md`：D01～D06 決策紀錄
-
-## 啟動方式
-
-在 PowerShell 執行：
+專案位於 `C:\Users\TJR_\Documents\ChatGPT\報工`。主要程式為 `app/routes.py`、`app/services.py`、`app/db.py`，畫面位於 `templates/`，本機資料庫為 `instance/intjr.db`。
 
 ```powershell
 Set-Location "C:\Users\TJR_\Documents\ChatGPT\報工"
-& "C:\Users\TJR_\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" app.py
+$env:INTJR_PORT = "5000"
+python app.py
 ```
 
-瀏覽器開啟：
+請使用已安裝 Flask 的系統 Python；Codex bundled Python 環境沒有 Flask，會出現 `ModuleNotFoundError: No module named 'flask'`。目前系統 Python 為 3.14，已安裝 Flask 3.1.3 與 openpyxl 3.1.5。
 
-```text
-http://127.0.0.1:5000
-```
+瀏覽器網址：`http://127.0.0.1:5000`。
 
-若要安裝套件：
+## 產品製號規則
 
-```powershell
-& "C:\Users\TJR_\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m pip install -r requirements.txt
-```
+- 產品由「機型 + 製號」識別；一個製號對應一個產品。
+- 機型前綴：HR-255＝E、AR-210＝C、AR-170＝B、RC-210＝CR、RC-255＝ER。其他機型可在機型主檔設定製號字首。
+- 年號為製作年份 + 1 的末兩位；例如 2026 年為 27。
+- 格式為 `字首年號-流水號`，流水號至少兩位；例：HR-255 2026 年第 10 台是 `E27-10`。
+- 新報工選擇組裝人員，並手動選製作年份、起始流水號與台數，系統連續產生製號。組裝人員可在「組裝人員」主檔新增或停用。既有產品數量不易回推，因此不自動猜起號；已使用製號不可重複建立。
+- 一批產品各自保存一筆 `job_run`，但同一批共用一張 START、一張 FINISH。全批完成後才掃 FINISH；不在 FINISH 輸入數量。
+- 工單號、產品批號、製程、計畫數量不再出現在新建、報表、列印或 Excel 操作流程。資料庫歷史欄位保留，舊資料不刪除。
+- 新產品報工不依賴機台主檔；舊機台資料（例如 E-01）仍維持其原有歷史語意，不能當作產品製號。
 
-示例資料建立：
+## 已有功能
 
-```powershell
-& "C:\Users\TJR_\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" scripts\seed_demo_data.py
-```
+- 機型主檔與舊機台主檔管理；機型主檔新增製號字首。
+- 產品製號批次建立、連號生成、重複製號防護與成對短版條碼列印。
+- 整批 START／FINISH 同步更新本批每筆產品明細，並防止 FINISH 早於 START、重複掃描。
+- 首頁狀態卡片與中文狀態、報表日期/機型/製號/狀態/組裝人員/批次篩選、運作時長。
+- Excel 明細、機型台數彙總、異常掃描清單；SQLite 備份、還原與稽核。
+- 資料庫 schema migration v3（由 `schema_migrations` 表追蹤）：舊報工欄位與 snapshot 保留，允許新產品明細不綁定機台，並為製號建立唯一索引；v4 新增組裝人員主檔。SQLite `PRAGMA user_version` 未用於版本管理。
 
-示例資料包含 HR-255、FAR-210、RC-210，以及 HR-255 的 E-01～E-10；編號語意維持 `unknown`。
+## 掃描與列印
 
-## 已完成的功能
+掃描頁：`http://127.0.0.1:5000/scan`。掃描器需設定為即時上傳模式，保持掃描頁輸入焦點；新批次先掃 START，該批所有產品完成後再掃 FINISH。條碼應以實際大小／100% 列印。
 
-- 機型主檔新增、編輯、停用。
-- 機台主檔規則產生與單筆建立，可停用與修改。
-- 連續範圍與非連續多選建立報工批次。
-- 一個批次可包含多台機台，資料庫仍保存每台 `job_run` 明細。
-- 預設整批報工：一個批次只列印一張 START 與一張 FINISH。
-- 整批 START 掃描一次，同步更新批次內所有機台為 `started`。
-- 整批 FINISH 掃描一次，同步更新批次內所有機台為 `finished`。
-- 報表仍保留每台機台的逐筆明細。
-- Code128 短版條碼，條碼內容為固定短前綴、批次短代碼與校驗碼；完整資料留在 SQLite。
-- A4 列印預覽；整批條碼版面約 4.5 公分寬。
-- USB HID 掃描器即時上傳、Enter 結束輸入、掃描成功／重複／錯誤提示。
-- Excel 明細、機型彙總、機台彙總、異常掃描清單。
-- SQLite 備份、完整性檢查、還原前安全備份與還原稽核。
-- `audit_log`、`scan_event`、`app.log`。
+## 驗證
 
-## 掃描器目前設定
+最近一次測試：2026-10-16 執行 `python -m pytest -q --basetemp .pytest-tmp`，16 passed；組裝人員主檔功能尚未重跑測試。尚待實機確認印表機及 USB HID 掃描器。
 
-使用者提供的設置卡標示「無線條碼掃描槍設置卡 V6.0」。原本掃描器在「存儲模式」，所以不會即時把內容傳給電腦。
+## 需求決策
 
-已解決方式：掃描設置卡第一張最上方的：
-
-```text
-即時上傳模式
-```
-
-不要掃描：
-
-- `存儲模式`
-- `立即關機`
-- `清零（謹慎使用）`
-
-第二張卡的 `數據上傳` 是把儲存模式中的資料批次傳出，不是切換即時模式。
-
-掃描頁：
-
-```text
-http://127.0.0.1:5000/scan
-```
-
-## 目前已確認的使用流程
-
-1. 建立一批，例如選 E-01～E-10。
-2. 列印新的整批 START／FINISH 條碼。
-3. 開啟掃描頁並保持輸入焦點。
-4. 掃一次 START，整批開始。
-5. 工作完成後掃一次 FINISH，整批完成。
-6. 到報表查看逐台明細。
-
-舊版長條碼不要繼續使用；程式已改成短版條碼，需重新建立批次並重新列印。列印時使用「實際大小／100%」，不要縮放至頁面。
-
-## 決策與限制
-
-- E-01～E-10 只是示例。
-- D01 尚未確認前，絕對不要自行判定 E-01 是永久資產號或批次流水號。
-- `number_semantics` 預設為 `unknown`，可配置 `asset` 或 `serial`，但必須等現場確認。
-- 歷史報工保存 model、machine、number semantics snapshot，不因主檔改名而改寫。
-- 系統預設整批掃描，但設定頁仍保留逐台 `job_run` 模式作為備用。
-
-## D01～D06 狀態
-
-| 編號 | 狀態 |
-|---|---|
-| D01 | 待確認；E-01 語意維持 `unknown` |
-| D02 | 待確認；預設同機台同工單只允許一筆進行中報工 |
-| D03 | 待確認；目前使用單一製程欄位 |
-| D04 | 待確認；工單號與產品批號可為空 |
-| D05 | 待確認；FINISH 預設完成量等於計畫量，可稽核更正 |
-| D06 | 待確認；目前先提供標準 Excel 欄位與日期篩選 |
-
-另有一項已由使用者確認的流程變更：同一張報工單選多台機台時，只需要一張 START 與一張 FINISH，掃描後同步更新該批次所有機台。詳見 `docs/decision-log.md`。
-
-## 測試狀態
-
-目前自動化測試結果：
-
-```text
-6 passed
-```
-
-已涵蓋短版整批條碼、checksum、整批 START／FINISH、重複掃描、未 START 直接 FINISH、重複選取機台防呆、機台編號語意驗證、列印預覽、備份與還原驗證。
-
-## 新對話建議開場文字
-
-```text
-請先閱讀 docs/current-status.md，這是 INTJR 條碼報工系統目前的交接狀態。核心流程已可用，接下來只修改我指定的細項。請保留整批一張 START／一張 FINISH、掃描器即時上傳模式，以及 E-01 編號語意 unknown 的限制。
-```
-
+製號規則及批次數量語意已由使用者確認，詳見 `docs/decision-log.md`。舊機台編號語意仍保留 unknown，不影響新的產品製號。

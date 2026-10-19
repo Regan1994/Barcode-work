@@ -6,22 +6,35 @@ from flask import Blueprint, current_app, flash, jsonify, redirect, render_templ
 
 from .barcode import code128_svg
 from .db import get_db
-from .services import ALLOWED_SEMANTICS, backup_database, correct_actual_qty, create_batch, create_machine, create_machine_range, create_model, ensure_barcodes, export_xlsx, get_batch, get_job, get_setting, list_machines, list_models, parse_payload, query_report, restore_database, scan, set_setting, update_machine, update_model
+from .services import ALLOWED_SEMANTICS, backup_database, correct_actual_qty, create_assembly_worker, create_batch, create_machine, create_machine_range, create_model, ensure_barcodes, export_xlsx, get_assembly_worker, get_batch, get_job, get_setting, list_assembly_workers, list_machines, list_models, parse_payload, query_report, restore_database, scan, set_assembly_worker_active, set_setting, update_machine, update_model
 
 bp = Blueprint("main", __name__)
 
 
 @bp.get("/")
 def index():
-    stats = get_db().execute("SELECT status, COUNT(*) AS count FROM job_run GROUP BY status").fetchall()
-    return render_template("index.html", stats=stats)
+    stats = get_db().execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN status IN ('created','started') THEN 1 ELSE 0 END), 0) AS incomplete,
+            COALESCE(SUM(CASE WHEN status='finished' THEN 1 ELSE 0 END), 0) AS finished,
+            COALESCE(SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END), 0) AS cancelled
+        FROM job_run
+        """
+    ).fetchone()
+    cards = [
+        {"label": "未完成", "count": stats["incomplete"], "filter": "incomplete"},
+        {"label": "已完成", "count": stats["finished"], "filter": "finished"},
+        {"label": "已取消", "count": stats["cancelled"], "filter": "cancelled"},
+    ]
+    return render_template("index.html", stats=cards)
 
 
 @bp.route("/models", methods=["GET", "POST"])
 def models():
     if request.method == "POST":
         try:
-            create_model(request.form.get("model_name"), request.form.get("model_code"), request.form.get("description", ""), request.form.get("operator_name", "admin"))
+            create_model(request.form.get("model_name"), request.form.get("model_code"), request.form.get("description", ""), request.form.get("operator_name", "admin"), request.form.get("serial_prefix"))
             flash("機型已建立", "success")
         except ValueError as exc:
             flash(str(exc), "error")
@@ -31,7 +44,7 @@ def models():
 @bp.post("/models/<int:model_id>/update")
 def model_update(model_id):
     try:
-        update_model(model_id, request.form.get("model_name"), request.form.get("model_code"), request.form.get("description", ""), request.form.get("is_active") == "1", request.form.get("operator_name", "admin"))
+        update_model(model_id, request.form.get("model_name"), request.form.get("model_code"), request.form.get("description", ""), request.form.get("is_active") == "1", request.form.get("operator_name", "admin"), request.form.get("serial_prefix"))
         flash("機型已更新", "success")
     except ValueError as exc:
         flash(str(exc), "error")
@@ -66,27 +79,41 @@ def machine_update(machine_id):
     return redirect(url_for("main.machines", model_id=request.form.get("model_id")))
 
 
+@bp.route("/assembly-workers", methods=["GET", "POST"])
+def assembly_workers():
+    if request.method == "POST":
+        try:
+            create_assembly_worker(request.form.get("name"), request.form.get("changed_by", "admin"))
+            flash("組裝人員已新增", "success")
+        except ValueError as exc:
+            flash(str(exc), "error")
+    return render_template("assembly_workers.html", workers=list_assembly_workers())
+
+
+@bp.post("/assembly-workers/<int:worker_id>/status")
+def assembly_worker_status(worker_id):
+    try:
+        set_assembly_worker_active(worker_id, request.form.get("is_active") == "1", request.form.get("changed_by", "admin"))
+        flash("組裝人員狀態已更新", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.assembly_workers"))
+
+
 @bp.get("/jobs/new")
 def job_new():
     model_id = request.args.get("model_id")
-    return render_template("job_new.html", models=list_models(True), machines=list_machines(model_id, True) if model_id else [], selected_model=model_id)
+    return render_template("job_new.html", models=list_models(True), workers=list_assembly_workers(True), selected_model=model_id, current_year=datetime.now().year)
 
 
 @bp.post("/jobs")
 def job_create():
     try:
         model_id = int(request.form["model_id"])
-        selection_mode = request.form.get("selection_mode", "multi")
-        if selection_mode == "range":
-            available = list_machines(model_id, True)
-            start_id, end_id = int(request.form["range_start"]), int(request.form["range_end"])
-            positions = {row["id"]: index for index, row in enumerate(available)}
-            if start_id not in positions or end_id not in positions or positions[start_id] > positions[end_id]:
-                raise ValueError("連續範圍起點不可大於終點，且必須在同一機型啟用清單中")
-            machine_ids = [row["id"] for row in available[positions[start_id]:positions[end_id] + 1]]
-        else:
-            machine_ids = [int(x) for x in request.form.getlist("machine_ids")]
-        batch_id, _ = create_batch(model_id, machine_ids, selection_mode, request.form.get("work_order_no", ""), request.form.get("product_lot_no", ""), request.form.get("process_name", ""), request.form.get("planned_qty"), request.form.get("operator_name", ""))
+        worker = get_assembly_worker(request.form.get("operator_name", ""))
+        if not worker:
+            raise ValueError("請先選擇有效的組裝人員；如清單沒有該人員，請先新增組裝人員")
+        batch_id, _ = create_batch(model_id, request.form.get("manufacturing_year"), request.form.get("starting_number"), request.form.get("product_count"), worker["name"])
         ensure_barcodes(batch_id)
         return redirect(url_for("main.print_batch", batch_id=batch_id))
     except (ValueError, KeyError) as exc:

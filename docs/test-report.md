@@ -1,10 +1,9 @@
 # 測試報告
 
-執行命令：`pytest -q`
+執行命令：`python -m pytest -q --basetemp .pytest-tmp`
 
-測試範圍：payload round trip、checksum、固定寬度機台範圍、機台編號語意驗證、重複選取機台防呆、非連續選擇、START／FINISH 狀態機與掃描冪等性、snapshot 保留、Excel 匯出、資料庫 foreign keys。
+最近一次結果：2026-10-16，16 passed。此結果早於 2026-10-19 組裝人員主檔功能；該功能尚未重跑自動化測試。
 
-目前結果：6 passed。
+測試涵蓋製號格式與四種機型字首、年份年號轉換、連號批次建立、重複製號防護、單批 START／FINISH 與冪等性、掃描 API、列印預覽、報表製號篩選與 Excel 匯出、報表狀態與時長、機台主檔舊功能，以及舊版資料庫 v3 遷移、歷史報工保留與外鍵完整性、備份還原驗證。
 
-實機 Windows 印表機與 USB HID 掃描器測試需在現場硬體可用後補登結果。
-
+Windows 實機印表機與 USB HID 掃描器尚未測試，需在現場硬體可用時補登。

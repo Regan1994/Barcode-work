@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>INTJR 條碼報工系統</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  {% block head %}{% endblock %}
 </head>
 <body>
   <header class="topbar">
@@ -14,6 +15,7 @@
       <a href="{{ url_for('main.scan_page') }}">掃描報工</a>
       <a href="{{ url_for('main.reports') }}">報表</a>
       <a href="{{ url_for('main.models') }}">機型主檔</a>
+      <a href="{{ url_for('main.assembly_workers') }}">組裝人員</a>
       <a href="{{ url_for('main.machines') }}">機台主檔</a>
       <a href="{{ url_for('main.settings') }}">設定</a>
     </nav>

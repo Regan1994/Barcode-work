@@ -12,10 +12,47 @@ from .db import get_db, utc_now
 
 ALLOWED_SEMANTICS = {"unknown", "asset", "serial"}
 CODE_RE = re.compile(r"^[^\s|]+$")
+STATUS_LABELS = {
+    "created": "未完成",
+    "started": "未完成",
+    "finished": "已完成",
+    "cancelled": "已取消",
+}
+MODEL_SERIAL_PREFIXES = {"HR255": "E", "RC255": "ER", "AR210": "C", "AR170": "B", "RC210": "CR"}
+
+
+def infer_serial_prefix(model_name, model_code):
+    for value in (model_code, model_name):
+        key = "".join(char for char in (value or "").upper() if char.isalnum())
+        if key in MODEL_SERIAL_PREFIXES:
+            return MODEL_SERIAL_PREFIXES[key]
+    return ""
 
 
 def new_id():
     return str(uuid.uuid4())
+
+
+def status_label(status):
+    return STATUS_LABELS.get(status, status or "-")
+
+
+def format_duration(started_at, finished_at, status=None):
+    if not started_at:
+        return "-"
+    if not finished_at:
+        return "進行中" if status == "started" else "-"
+    try:
+        started = datetime.fromisoformat(started_at)
+        finished = datetime.fromisoformat(finished_at)
+    except (TypeError, ValueError):
+        return "-"
+    seconds = max(0, int((finished - started).total_seconds()))
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    duration = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{days}日 {duration}" if days else duration
 
 
 def validate_text(value, field, required=True):
@@ -66,15 +103,60 @@ def list_models(active_only=False):
     return get_db().execute(sql + " ORDER BY sort_order, model_name").fetchall()
 
 
-def create_model(model_name, model_code, description="", operator_name="system"):
-    model_name = validate_text(model_name, "機型名稱")
-    model_code = validate_code(model_code, "機型代碼")
+def list_assembly_workers(active_only=False):
+    sql = "SELECT * FROM assembly_worker"
+    if active_only:
+        sql += " WHERE is_active=1"
+    return get_db().execute(sql + " ORDER BY name COLLATE NOCASE").fetchall()
+
+
+def get_assembly_worker(name):
+    name = validate_text(name, "組裝人員")
+    return get_db().execute(
+        "SELECT * FROM assembly_worker WHERE name=? COLLATE NOCASE AND is_active=1",
+        (name,),
+    ).fetchone()
+
+
+def create_assembly_worker(name, changed_by="admin"):
+    name = validate_text(name, "組裝人員")
     db = get_db()
     now = utc_now()
     try:
         cur = db.execute(
-            "INSERT INTO model_master(model_name,model_code,description,created_at,updated_at) VALUES(?,?,?,?,?)",
-            (model_name, model_code, description.strip(), now, now),
+            "INSERT INTO assembly_worker(name,created_at,updated_at) VALUES(?,?,?)",
+            (name, now, now),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("此組裝人員已存在") from exc
+    add_audit("create", "assembly_worker", str(cur.lastrowid), {"name": name}, changed_by)
+    db.commit()
+    return cur.lastrowid
+
+
+def set_assembly_worker_active(worker_id, is_active, changed_by="admin"):
+    db = get_db()
+    worker = db.execute("SELECT name FROM assembly_worker WHERE id=?", (worker_id,)).fetchone()
+    if not worker:
+        raise ValueError("找不到組裝人員")
+    db.execute(
+        "UPDATE assembly_worker SET is_active=?,updated_at=? WHERE id=?",
+        (int(bool(is_active)), utc_now(), worker_id),
+    )
+    add_audit("update", "assembly_worker", str(worker_id), {"name": worker["name"], "is_active": bool(is_active)}, changed_by)
+    db.commit()
+
+
+def create_model(model_name, model_code, description="", operator_name="system", serial_prefix=None):
+    model_name = validate_text(model_name, "機型名稱")
+    model_code = validate_code(model_code, "機型代碼")
+    serial_prefix = validate_code(serial_prefix, "製號字首") if serial_prefix else infer_serial_prefix(model_name, model_code)
+    db = get_db()
+    now = utc_now()
+    try:
+        cur = db.execute(
+            "INSERT INTO model_master(model_name,model_code,serial_prefix,description,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            (model_name, model_code, serial_prefix, description.strip(), now, now),
         )
     except sqlite3.IntegrityError as exc:
         raise ValueError("機型代碼已存在") from exc
@@ -83,12 +165,13 @@ def create_model(model_name, model_code, description="", operator_name="system")
     return cur.lastrowid
 
 
-def update_model(model_id, model_name, model_code, description, is_active, operator_name="system"):
+def update_model(model_id, model_name, model_code, description, is_active, operator_name="system", serial_prefix=None):
     model_name = validate_text(model_name, "機型名稱")
     model_code = validate_code(model_code, "機型代碼")
+    serial_prefix = validate_code(serial_prefix, "製號字首") if serial_prefix else infer_serial_prefix(model_name, model_code)
     db = get_db()
     try:
-        db.execute("UPDATE model_master SET model_name=?,model_code=?,description=?,is_active=?,updated_at=? WHERE id=?", (model_name, model_code, description.strip(), int(bool(is_active)), utc_now(), model_id))
+        db.execute("UPDATE model_master SET model_name=?,model_code=?,serial_prefix=?,description=?,is_active=?,updated_at=? WHERE id=?", (model_name, model_code, serial_prefix, description.strip(), int(bool(is_active)), utc_now(), model_id))
     except sqlite3.IntegrityError as exc:
         raise ValueError("機型代碼已存在") from exc
     add_audit("update", "model_master", str(model_id), {"model_code": model_code, "is_active": bool(is_active)}, operator_name)
@@ -106,6 +189,41 @@ def list_machines(model_id=None, active_only=False):
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     return get_db().execute(sql + " ORDER BY sort_order, number_value, display_no", params).fetchall()
+
+
+def machine_number_prefix(model_id):
+    machines = get_db().execute(
+        "SELECT display_no FROM machine_master WHERE model_id=? AND is_active=1 ORDER BY id",
+        (model_id,),
+    ).fetchall()
+    prefixes = set()
+    for machine in machines:
+        prefix, separator, suffix = machine["display_no"].rpartition("-")
+        if not separator or not prefix or not suffix.isdigit():
+            return ""
+        prefixes.add(prefix + separator)
+    return next(iter(prefixes)) if len(prefixes) == 1 else ""
+
+
+def machine_ids_from_numbers(model_id, machine_numbers):
+    tokens = [token.strip() for token in (machine_numbers or "").split(",")]
+    if not tokens or any(not token for token in tokens):
+        raise ValueError("請以逗號分隔輸入機台編號")
+    normalized = [token.casefold() for token in tokens]
+    if len(normalized) != len(set(normalized)):
+        raise ValueError("機台編號不可重複")
+
+    available = get_db().execute(
+        "SELECT id, display_no FROM machine_master WHERE model_id=? AND is_active=1",
+        (model_id,),
+    ).fetchall()
+    machines_by_number = {row["display_no"].casefold(): row["id"] for row in available}
+    prefix = machine_number_prefix(model_id)
+    machine_numbers = [prefix + token if prefix and token.isdigit() else token for token in tokens]
+    invalid = [number for number, token in zip(machine_numbers, tokens) if number.casefold() not in machines_by_number or (prefix and not token.isdigit())]
+    if invalid:
+        raise ValueError("機台不存在、未啟用或不屬於所選機型：" + ", ".join(invalid))
+    return [machines_by_number[number.casefold()] for number in machine_numbers]
 
 
 def _machine_semantics(value):
@@ -173,46 +291,41 @@ def get_job(job_run_id):
     return get_db().execute("SELECT * FROM job_run WHERE job_run_id=?", (job_run_id,)).fetchone()
 
 
-def create_batch(model_id, machine_ids, selection_mode, work_order_no, product_lot_no, process_name, planned_qty, operator_name):
-    if not machine_ids:
-        raise ValueError("至少選擇一台啟用機台")
-    if len(machine_ids) != len(set(machine_ids)):
-        raise ValueError("同一台機台不可重複選取")
-    work_order_no = (work_order_no or "").strip()
-    product_lot_no = (product_lot_no or "").strip()
-    process_name = (process_name or "").strip()
+def create_batch(model_id, manufacturing_year, starting_number, product_count, operator_name):
     try:
-        planned_qty = int(planned_qty)
+        manufacturing_year = int(manufacturing_year)
+        starting_number = int(starting_number)
+        product_count = int(product_count)
     except (TypeError, ValueError) as exc:
-        raise ValueError("數量必須是正整數") from exc
-    if planned_qty <= 0:
-        raise ValueError("數量必須是正整數")
-    operator_name = validate_text(operator_name, "操作者")
+        raise ValueError("製作年份、起始流水號與台數都必須是正整數") from exc
+    if not 2000 <= manufacturing_year <= 2099 or starting_number < 1 or product_count < 1:
+        raise ValueError("製作年份需為 2000–2099，起始流水號與台數必須是正整數")
+    operator_name = validate_text(operator_name, "組裝人員")
     db = get_db()
     model = db.execute("SELECT * FROM model_master WHERE id=? AND is_active=1", (model_id,)).fetchone()
     if not model:
         raise ValueError("機型不存在或已停用")
-    placeholders = ",".join("?" for _ in machine_ids)
-    machines = db.execute(f"SELECT * FROM machine_master WHERE model_id=? AND is_active=1 AND id IN ({placeholders})", [model_id, *machine_ids]).fetchall()
-    if len(machines) != len(set(machine_ids)):
-        raise ValueError("包含不存在、停用或不屬於該機型的機台")
-    if work_order_no:
-        active = db.execute(
-            "SELECT machine_id FROM job_run WHERE status IN ('created','started') AND work_order_no=? AND machine_id IN (" + placeholders + ")",
-            [work_order_no, *machine_ids],
-        ).fetchone()
-        if active:
-            raise ValueError("同一機台同一工單已有進行中報工")
+    serial_prefix = model["serial_prefix"] or infer_serial_prefix(model["model_name"], model["model_code"])
+    if not serial_prefix:
+        raise ValueError("此機型尚未設定製號字首，請至機型主檔設定")
+    year_marker = f"{(manufacturing_year + 1) % 100:02d}"
+    serials = [f"{serial_prefix}{year_marker}-{number:02d}" for number in range(starting_number, starting_number + product_count)]
+    placeholders = ",".join("?" for _ in serials)
+    used = db.execute(f"SELECT product_serial FROM job_run WHERE product_serial IN ({placeholders})", serials).fetchall()
+    legacy_used = db.execute(f"SELECT machine_no_snapshot FROM job_run WHERE machine_no_snapshot IN ({placeholders})", serials).fetchall()
+    if used or legacy_used:
+        duplicates = {row[0] for row in [*used, *legacy_used]}
+        raise ValueError("以下製號已存在，請更換起始流水號：" + ", ".join(sorted(duplicates)))
     now = utc_now()
     batch_id = new_id()
     batch_no = "B-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + batch_id[:6].upper()
-    db.execute("INSERT INTO production_batch(batch_id,batch_no,selection_mode,work_order_no,product_lot_no,process_name,operator_name,created_at) VALUES(?,?,?,?,?,?,?,?)", (batch_id, batch_no, selection_mode, work_order_no, product_lot_no, process_name, operator_name, now))
+    db.execute("INSERT INTO production_batch(batch_id,batch_no,selection_mode,operator_name,created_at) VALUES(?,?,?,?,?)", (batch_id, batch_no, "serial_range", operator_name, now))
     job_ids = []
-    for machine in machines:
+    for serial in serials:
         job_id = new_id()
         job_ids.append(job_id)
-        db.execute("INSERT INTO job_run(job_run_id,batch_id,model_id,machine_id,model_name_snapshot,model_code_snapshot,machine_no_snapshot,number_semantics_snapshot,work_order_no,product_lot_no,process_name,planned_qty,status,operator_name,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (job_id, batch_id, model_id, machine["id"], model["model_name"], model["model_code"], machine["display_no"], machine["number_semantics"], work_order_no, product_lot_no, process_name, planned_qty, "created", operator_name, now, now))
-    add_audit("create", "production_batch", batch_id, {"job_count": len(job_ids), "selection_mode": selection_mode}, operator_name)
+        db.execute("INSERT INTO job_run(job_run_id,batch_id,model_id,machine_id,product_serial,manufacturing_year,model_name_snapshot,model_code_snapshot,machine_no_snapshot,number_semantics_snapshot,planned_qty,status,operator_name,created_at,updated_at) VALUES(?,?,?,NULL,?,?,?,?,?,'serial',NULL,'created',?,?,?)", (job_id, batch_id, model_id, serial, manufacturing_year, model["model_name"], model["model_code"], serial, operator_name, now, now))
+    add_audit("create", "production_batch", batch_id, {"job_count": len(job_ids), "manufacturing_year": manufacturing_year, "serials": serials}, operator_name)
     db.commit()
     return batch_id, job_ids
 
@@ -263,8 +376,8 @@ def ensure_barcodes(batch_id):
     db = get_db()
     jobs = db.execute("SELECT * FROM job_run WHERE batch_id=? ORDER BY id", (batch_id,)).fetchall()
     now = utc_now()
-    if get_setting("batch_scan_mode", "batch") == "batch":
-        batch = get_batch(batch_id)
+    batch = get_batch(batch_id)
+    if batch["selection_mode"] == "serial_range" or get_setting("batch_scan_mode", "batch") == "batch":
         for kind in ("START", "FINISH"):
             payload = make_batch_payload(kind, batch, jobs)
             db.execute("INSERT OR IGNORE INTO barcode_record(batch_id,barcode_scope,barcode_type,payload,created_at) VALUES(?,?,?,?,?)", (batch_id, "batch", kind, payload, now))
@@ -296,7 +409,7 @@ def scan(payload, operator_name="scanner"):
                 pending = [job for job in jobs if job["status"] == "created"]
                 if pending:
                     db.executemany("UPDATE job_run SET status='started',started_at=?,updated_at=? WHERE job_run_id=?", [(scanned_at, scanned_at, job["job_run_id"]) for job in pending])
-                    result, message = "success", f"整批 START 成功：{len(pending)} 台機台"
+                    result, message = "success", f"整批 START 成功：{len(pending)} 台產品"
                 elif all(job["status"] == "started" for job in jobs):
                     result, message = "duplicate", "此批次已完成 START"
                 else:
@@ -305,14 +418,14 @@ def scan(payload, operator_name="scanner"):
                 started = [job for job in jobs if job["status"] == "started"]
                 created = [job for job in jobs if job["status"] == "created"]
                 if created:
-                    result, message = "invalid", "批次內仍有機台未 START，不能 FINISH"
+                    result, message = "invalid", "批次內仍有產品未 START，不能 FINISH"
                 elif started:
-                    db.executemany("UPDATE job_run SET status='finished',actual_qty=planned_qty,finished_at=?,updated_at=? WHERE job_run_id=?", [(scanned_at, scanned_at, job["job_run_id"]) for job in started])
-                    result, message = "success", f"整批 FINISH 成功：{len(started)} 台機台"
+                    db.executemany("UPDATE job_run SET status='finished',actual_qty=CASE WHEN product_serial IS NULL THEN planned_qty ELSE actual_qty END,finished_at=?,updated_at=? WHERE job_run_id=?", [(scanned_at, scanned_at, job["job_run_id"]) for job in started])
+                    result, message = "success", f"整批 FINISH 成功：{len(started)} 台產品"
                 elif all(job["status"] == "finished" for job in jobs):
                     result, message = "duplicate", "此批次已完成 FINISH"
                 else:
-                    result, message = "invalid", "此批次已取消或沒有可完成的機台"
+                    result, message = "invalid", "此批次已取消或沒有可完成的產品"
             db.execute("INSERT INTO scan_event(event_id,payload,barcode_type,job_run_id,result,message,scanned_at,operator_name) VALUES(?,?,?,?,?,?,?,?)", (event_id, payload, kind, None, result, message, scanned_at, operator_name))
             db.commit()
             return {"event_id": event_id, "result": result, "message": message, "scanned_at": scanned_at}
@@ -330,7 +443,7 @@ def scan(payload, operator_name="scanner"):
                 result, message = "invalid", "此報工已完成或已取消"
         else:
             if job["status"] == "started":
-                db.execute("UPDATE job_run SET status='finished',actual_qty=planned_qty,finished_at=?,updated_at=? WHERE job_run_id=?", (scanned_at, scanned_at, job["job_run_id"]))
+                db.execute("UPDATE job_run SET status='finished',actual_qty=CASE WHEN product_serial IS NULL THEN planned_qty ELSE actual_qty END,finished_at=?,updated_at=? WHERE job_run_id=?", (scanned_at, scanned_at, job["job_run_id"]))
                 result, message = "success", f"FINISH 成功：{job['machine_no_snapshot']}"
             elif job["status"] == "created":
                 result, message = "invalid", "必須先掃描 START"
@@ -368,7 +481,14 @@ def correct_actual_qty(job_run_id, actual_qty, operator_name):
 def query_report(filters):
     db = get_db()
     clauses, params = [], []
-    mapping = {"model_code": "j.model_code_snapshot", "machine_no": "j.machine_no_snapshot", "status": "j.status", "operator_name": "j.operator_name", "work_order_no": "j.work_order_no", "batch_no": "b.batch_no"}
+    status_group = (filters.get("status_group") or "").strip()
+    if status_group == "incomplete":
+        clauses.append("j.status IN ('created','started')")
+    elif status_group == "finished":
+        clauses.append("j.status='finished'")
+    elif status_group == "cancelled":
+        clauses.append("j.status='cancelled'")
+    mapping = {"model_code": "j.model_code_snapshot", "machine_no": "COALESCE(j.product_serial,j.machine_no_snapshot)", "status": "j.status", "operator_name": "j.operator_name", "batch_no": "b.batch_no"}
     for key, column in mapping.items():
         value = (filters.get(key) or "").strip()
         if value:
@@ -386,10 +506,11 @@ def query_report(filters):
 
 
 def export_xlsx(rows, path):
+    from copy import copy
     from openpyxl import Workbook
     from openpyxl.utils import get_column_letter
 
-    headers = ["批次號", "job_run識別碼", "工單號", "產品批號", "製程", "機型名稱", "機型代碼", "機台編號", "編號語意", "計畫數量", "完成數量", "狀態", "開始時間", "完成時間", "操作者", "建立時間", "最後更新時間"]
+    headers = ["批次號", "job_run識別碼", "機型名稱", "機型代碼", "產品製號", "製作年份", "狀態", "開始時間", "完成時間", "運作時長", "組裝人員", "建立時間", "最後更新時間"]
     wb = Workbook()
     ws = wb.active
     ws.title = "明細"
@@ -400,33 +521,26 @@ def export_xlsx(rows, path):
         return "'" + value if value[:1] in {"=", "+", "-", "@"} else value
 
     for row in rows:
-        values = [row["batch_no"], row["job_run_id"], row["work_order_no"], row["product_lot_no"], row["process_name"], row["model_name_snapshot"], row["model_code_snapshot"], row["machine_no_snapshot"], row["number_semantics_snapshot"], row["planned_qty"], row["actual_qty"], row["status"], row["started_at"], row["finished_at"], row["operator_name"], row["created_at"], row["updated_at"]]
+        values = [row["batch_no"], row["job_run_id"], row["model_name_snapshot"], row["model_code_snapshot"], row["product_serial"] or row["machine_no_snapshot"], row["manufacturing_year"], status_label(row["status"]), row["started_at"], row["finished_at"], format_duration(row["started_at"], row["finished_at"], row["status"]), row["operator_name"], row["created_at"], row["updated_at"]]
         ws.append([excel_value(v) for v in values])
     if not rows:
         ws.append(["無資料"] + [None] * (len(headers) - 1))
     for cell in ws[1]:
-        cell.font = cell.font.copy(bold=True)
+        header_font = copy(cell.font)
+        header_font.bold = True
+        cell.font = header_font
     for idx, header in enumerate(headers, 1):
         ws.column_dimensions[get_column_letter(idx)].width = min(max(len(header) + 2, 12), 24)
 
     by_model = wb.create_sheet("依機型彙總")
-    by_model.append(["機型代碼", "機型名稱", "筆數", "計畫數量", "完成數量"])
+    by_model.append(["機型代碼", "機型名稱", "產品台數"])
     model_totals = {}
     for row in rows:
         key = (row["model_code_snapshot"], row["model_name_snapshot"])
-        item = model_totals.setdefault(key, [0, 0, 0])
-        item[0] += 1; item[1] += row["planned_qty"] or 0; item[2] += row["actual_qty"] or 0
+        item = model_totals.setdefault(key, 0)
+        model_totals[key] = item + 1
     for (code, name), item in model_totals.items():
-        by_model.append([code, name, *item])
-
-    by_machine = wb.create_sheet("依機台彙總")
-    by_machine.append(["機台編號", "筆數", "計畫數量", "完成數量"])
-    machine_totals = {}
-    for row in rows:
-        item = machine_totals.setdefault(row["machine_no_snapshot"], [0, 0, 0])
-        item[0] += 1; item[1] += row["planned_qty"] or 0; item[2] += row["actual_qty"] or 0
-    for machine, item in machine_totals.items():
-        by_machine.append([machine, *item])
+        by_model.append([code, name, item])
 
     errors = wb.create_sheet("異常掃描")
     errors.append(["事件ID", "條碼類型", "job_run", "結果", "訊息", "掃描時間", "操作者"])

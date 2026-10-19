@@ -1,3 +1,26 @@
 {% extends 'base.html' %}
-{% block content %}<h1>建立報工批次</h1><form method="post" action="{{ url_for('main.job_create') }}" class="panel form-wide"><div class="grid two"><label>機型<select name="model_id" id="model_id" required onchange="location='{{ url_for('main.job_new') }}?model_id='+this.value"><option value="">請選擇</option>{% for model in models %}<option value="{{ model.id }}" {% if selected_model|string == model.id|string %}selected{% endif %}>{{ model.model_name }}（{{ model.model_code }}）</option>{% endfor %}</select></label><label>選擇模式<select name="selection_mode"><option value="range">連續範圍</option><option value="multi">非連續多選</option></select></label></div>{% if machines %}<div class="machine-picker"><h2>選擇機台</h2><p class="muted">連續範圍會依主檔排序納入起點至終點；非連續模式可任意勾選。停用資料不會出現。</p><div class="grid two"><div><h3>連續範圍</h3><label>起始機台<select name="range_start">{% for machine in machines %}<option value="{{ machine.id }}">{{ machine.display_no }}</option>{% endfor %}</select></label><label>結束機台<select name="range_end">{% for machine in machines %}<option value="{{ machine.id }}">{{ machine.display_no }}</option>{% endfor %}</select></label></div><div><h3>非連續多選</h3><div class="machine-grid">{% for machine in machines %}<label class="check"><input type="checkbox" name="machine_ids" value="{{ machine.id }}">{{ machine.display_no }}</label>{% endfor %}</div></div></div></div>{% endif %}<div class="grid three"><label>工單號<input name="work_order_no"></label><label>產品批號<input name="product_lot_no"></label><label>製程<input name="process_name"></label></div><div class="grid two"><label>計畫數量<input type="number" name="planned_qty" min="1" required></label><label>操作者<input name="operator_name" required></label></div><button class="button primary" {% if not machines %}disabled{% endif %}>建立批次並產生條碼</button></form>{% endblock %}
-
+{% block content %}
+<h1>建立產品報工批次</h1>
+<form method="post" action="{{ url_for('main.job_create') }}" class="panel form-wide">
+  <label>機型
+    <select name="model_id" required onchange="location='{{ url_for('main.job_new') }}?model_id='+this.value">
+      <option value="">請選擇</option>
+      {% for model in models %}<option value="{{ model.id }}" {% if selected_model|string == model.id|string %}selected{% endif %}>{{ model.model_name }} ({{ model.serial_prefix or '未設定字首' }})</option>{% endfor %}
+    </select>
+  </label>
+  <p class="muted">製號格式：機型製號字首 + 年號（製作年份 + 1）+ 流水號，例如 HR-255 在 2026 年製作，製號為 E27-10。</p>
+  <div class="grid three">
+    <label>製作年份<input type="number" name="manufacturing_year" min="2000" max="2099" value="{{ current_year }}" required></label>
+    <label>起始流水號<input type="number" name="starting_number" min="1" value="1" required></label>
+    <label>本批台數<input type="number" name="product_count" min="1" value="1" required></label>
+  </div>
+  <label>組裝人員
+    <select name="operator_name" required>
+      <option value="">請選擇</option>
+      {% for worker in workers %}<option value="{{ worker.name }}">{{ worker.name }}</option>{% endfor %}
+    </select>
+    <a class="muted" href="{{ url_for('main.assembly_workers') }}">新增組裝人員</a>
+  </label>
+  <button class="button primary">建立批次並產生條碼</button>
+</form>
+{% endblock %}
