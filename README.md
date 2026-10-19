@@ -35,7 +35,7 @@ pytest -q
 - Phase 3：報工批次、連續／非連續機台選擇與 snapshot。
 - Phase 4：Code128 payload、條碼 SVG 與 A4 列印版面。
 - Phase 5：USB HID Enter 輸入、狀態機、冪等掃描與 scan_event。
-- Phase 6：日期與條件篩選、Excel 明細／彙總／異常工作表。
+- Phase 6：日期與條件篩選、單一工作表 Excel 明細匯出。
 - Phase 7：SQLite 備份與完整性驗證；稽核紀錄。
 - Phase 8：Windows 文件、測試與驗收清單。
 

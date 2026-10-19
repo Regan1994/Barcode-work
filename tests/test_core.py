@@ -127,8 +127,9 @@ def test_report_filter_print_and_export_use_product_serial(client, app, tmp_path
         output = tmp_path / "report.xlsx"
         export_xlsx(query_report({}), output)
         workbook = load_workbook(output, read_only=True)
-        assert workbook["明細"]["E2"].value in {"E27-10", "E27-11"}
-        assert workbook["依機型彙總"]["C2"].value == 2
+        assert workbook.sheetnames == ["明細"]
+        assert [cell.value for cell in workbook["明細"][1]] == ["機型", "製號", "狀態", "開始時間", "結束時間", "時長", "組裝人員"]
+        assert workbook["明細"]["B2"].value in {"E27-10", "E27-11"}
 
     preview = client.get(f"/batches/{batch_id}/print").get_data(as_text=True)
     assert "E27-10" in preview and "E27-11" in preview

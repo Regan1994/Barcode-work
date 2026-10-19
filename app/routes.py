@@ -11,8 +11,7 @@ from .services import ALLOWED_SEMANTICS, backup_database, correct_actual_qty, cr
 bp = Blueprint("main", __name__)
 
 
-@bp.get("/")
-def index():
+def render_home(scan_result=None):
     stats = get_db().execute(
         """
         SELECT
@@ -27,7 +26,13 @@ def index():
         {"label": "已完成", "count": stats["finished"], "filter": "finished"},
         {"label": "已取消", "count": stats["cancelled"], "filter": "cancelled"},
     ]
-    return render_template("index.html", stats=cards)
+    return render_template("index.html", stats=cards, scan_result=scan_result)
+
+
+@bp.route("/", methods=["GET", "POST"])
+def index():
+    result = scan(request.form.get("payload", ""), "scanner") if request.method == "POST" else None
+    return render_home(result)
 
 
 @bp.route("/models", methods=["GET", "POST"])
@@ -133,10 +138,9 @@ def print_batch(batch_id):
 
 @bp.route("/scan", methods=["GET", "POST"])
 def scan_page():
-    result = None
     if request.method == "POST":
-        result = scan(request.form.get("payload", ""), request.form.get("operator_name", "scanner"))
-    return render_template("scan.html", result=result)
+        return render_home(scan(request.form.get("payload", ""), "scanner"))
+    return redirect(url_for("main.index"))
 
 
 @bp.post("/api/scan")

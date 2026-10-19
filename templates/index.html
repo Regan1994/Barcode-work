@@ -1,7 +1,45 @@
 {% extends 'base.html' %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='home.css') }}">{% endblock %}
 {% block content %}
-<section class="hero"><div><p class="eyebrow">OFFLINE / WINDOWS</p><h1>條碼報工工作台</h1><p>選擇機型、製作年份、起始流水號與台數，建立產品製號批次；列印成對條碼後，以 USB HID 掃描完成整批 START / FINISH。</p></div><a class="button primary" href="{{ url_for('main.job_new') }}">建立新報工</a></section>
-<div class="cards">{% for row in stats %}<a class="stat button" href="{{ url_for('main.reports', status_group=row.filter) }}"><span>{{ row.label }}</span><strong>{{ row.count }}</strong></a>{% else %}<div class="empty">尚無報工紀錄</div>{% endfor %}</div>
-<div class="grid two"><section class="panel"><h2>快速操作</h2><div class="quick-links"><a href="{{ url_for('main.job_new') }}">建立並列印條碼</a><a href="{{ url_for('main.scan_page') }}">開啟掃描頁</a><a href="{{ url_for('main.reports') }}">查詢與匯出報表</a></div></section><section class="panel"><h2>資料安全</h2><p>系統預設只綁定 127.0.0.1，資料保存在本機 SQLite。管理員可從下方建立驗證過的備份。</p><form method="post" action="{{ url_for('main.backup') }}"><button class="button">立即備份資料庫</button></form></section></div>
-{% endblock %}
+<section class="home-actions">
+  <article class="home-card">
+    <p class="home-card-kicker">01 / 建立</p>
+    <h1>條碼報工工作台</h1>
+    <p class="home-card-description">選擇機型與組裝人員，建立產品製號並列印 START／FINISH 條碼。</p>
+    <a class="button primary home-card-action" href="{{ url_for('main.job_new') }}">建立新報工</a>
+  </article>
 
+  <article class="home-card home-scan-card">
+    <p class="home-card-kicker">02 / 現場作業</p>
+    <h2>掃描報工</h2>
+    <p class="home-card-description">先掃 START；整批產品完成後，再掃 FINISH。請使用 USB HID 即時上傳模式。</p>
+    <form method="post" id="scan-form" action="{{ url_for('main.index') }}" class="home-scan-form">
+      <label for="payload">掃描 START／FINISH 條碼</label>
+      <input id="payload" name="payload" autofocus autocomplete="off" placeholder="等待掃描…" required>
+      <button class="button primary home-card-action" type="submit">送出掃描</button>
+    </form>
+    {% if scan_result %}<div class="scan-result {{ scan_result.result }}" role="status"><strong>{{ scan_result.result }}</strong><span>{{ scan_result.message }}</span><small>{{ scan_result.scanned_at }}</small></div>{% endif %}
+  </article>
+
+  <article class="home-card">
+    <p class="home-card-kicker">03 / 資料查詢</p>
+    <h2>查詢</h2>
+    <p class="home-card-description">依日期、機型、製號、狀態或組裝人員查找報工紀錄，並匯出 Excel。</p>
+    <a class="button primary home-card-action" href="{{ url_for('main.reports') }}">查詢報工紀錄</a>
+  </article>
+</section>
+
+<section class="home-status" aria-label="報工狀態">
+  {% for row in stats %}{% if row.filter == 'cancelled' %}
+  <div class="stat stat-locked" role="status" aria-disabled="true" title="目前僅顯示狀態，不提供操作" style="cursor:default"><span>{{ row.label }}</span><strong>{{ row.count }}</strong><small>僅供狀態查看</small></div>
+  {% else %}
+  <a class="stat button" href="{{ url_for('main.reports', status_group=row.filter) }}"><span>{{ row.label }}</span><strong>{{ row.count }}</strong></a>
+  {% endif %}{% endfor %}
+</section>
+
+<section class="panel home-backup">
+  <h2>資料安全</h2>
+  <p>系統預設只綁定 127.0.0.1，資料保存在本機 SQLite。管理員可建立驗證過的備份。</p>
+  <form method="post" action="{{ url_for('main.backup') }}"><button class="button">立即備份資料庫</button></form>
+</section>
+{% endblock %}

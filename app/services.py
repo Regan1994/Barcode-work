@@ -488,7 +488,7 @@ def query_report(filters):
         clauses.append("j.status='finished'")
     elif status_group == "cancelled":
         clauses.append("j.status='cancelled'")
-    mapping = {"model_code": "j.model_code_snapshot", "machine_no": "COALESCE(j.product_serial,j.machine_no_snapshot)", "status": "j.status", "operator_name": "j.operator_name", "batch_no": "b.batch_no"}
+    mapping = {"model_code": "j.model_code_snapshot", "machine_no": "COALESCE(j.product_serial,j.machine_no_snapshot)", "status": "j.status", "operator_name": "j.operator_name"}
     for key, column in mapping.items():
         value = (filters.get(key) or "").strip()
         if value:
@@ -499,7 +499,7 @@ def query_report(filters):
         if value:
             clauses.append(f"substr(j.created_at,1,10) {op} ?")
             params.append(value)
-    sql = "SELECT j.*, b.batch_no, b.selection_mode, b.created_at AS batch_created_at FROM job_run j JOIN production_batch b ON b.batch_id=j.batch_id"
+    sql = "SELECT j.* FROM job_run j"
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     return db.execute(sql + " ORDER BY j.created_at DESC, j.id DESC", params).fetchall()
@@ -510,7 +510,7 @@ def export_xlsx(rows, path):
     from openpyxl import Workbook
     from openpyxl.utils import get_column_letter
 
-    headers = ["批次號", "job_run識別碼", "機型名稱", "機型代碼", "產品製號", "製作年份", "狀態", "開始時間", "完成時間", "運作時長", "組裝人員", "建立時間", "最後更新時間"]
+    headers = ["機型", "製號", "狀態", "開始時間", "結束時間", "時長", "組裝人員"]
     wb = Workbook()
     ws = wb.active
     ws.title = "明細"
@@ -521,10 +521,8 @@ def export_xlsx(rows, path):
         return "'" + value if value[:1] in {"=", "+", "-", "@"} else value
 
     for row in rows:
-        values = [row["batch_no"], row["job_run_id"], row["model_name_snapshot"], row["model_code_snapshot"], row["product_serial"] or row["machine_no_snapshot"], row["manufacturing_year"], status_label(row["status"]), row["started_at"], row["finished_at"], format_duration(row["started_at"], row["finished_at"], row["status"]), row["operator_name"], row["created_at"], row["updated_at"]]
+        values = [row["model_name_snapshot"], row["product_serial"] or row["machine_no_snapshot"], status_label(row["status"]), row["started_at"], row["finished_at"], format_duration(row["started_at"], row["finished_at"], row["status"]), row["operator_name"]]
         ws.append([excel_value(v) for v in values])
-    if not rows:
-        ws.append(["無資料"] + [None] * (len(headers) - 1))
     for cell in ws[1]:
         header_font = copy(cell.font)
         header_font.bold = True
@@ -532,20 +530,6 @@ def export_xlsx(rows, path):
     for idx, header in enumerate(headers, 1):
         ws.column_dimensions[get_column_letter(idx)].width = min(max(len(header) + 2, 12), 24)
 
-    by_model = wb.create_sheet("依機型彙總")
-    by_model.append(["機型代碼", "機型名稱", "產品台數"])
-    model_totals = {}
-    for row in rows:
-        key = (row["model_code_snapshot"], row["model_name_snapshot"])
-        item = model_totals.setdefault(key, 0)
-        model_totals[key] = item + 1
-    for (code, name), item in model_totals.items():
-        by_model.append([code, name, item])
-
-    errors = wb.create_sheet("異常掃描")
-    errors.append(["事件ID", "條碼類型", "job_run", "結果", "訊息", "掃描時間", "操作者"])
-    for event in get_db().execute("SELECT * FROM scan_event WHERE result NOT IN ('success') ORDER BY scanned_at DESC").fetchall():
-        errors.append([event["event_id"], event["barcode_type"], event["job_run_id"], event["result"], event["message"], event["scanned_at"], event["operator_name"]])
     wb.save(path)
 
 
