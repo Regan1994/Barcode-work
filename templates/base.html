@@ -10,13 +10,7 @@
 <body>
   <header class="topbar">
     <a class="brand" href="{{ url_for('main.index') }}">INTJR 條碼報工</a>
-    <nav>
-      <a href="{{ url_for('main.job_new') }}">建立報工</a>
-      <a href="{{ url_for('main.scan_page') }}">報工掃描</a>
-      <a href="{{ url_for('main.recent_batches') }}">最近批次</a>
-      <a href="{{ url_for('main.reports') }}">報表</a>
-      <a href="{{ url_for('main.models') }}">機型主檔</a>
-      <a href="{{ url_for('main.assembly_workers') }}">組裝人員</a>
+    <nav class="admin-nav">
       <a href="{{ url_for('main.settings') }}">設定</a>
       <a href="{{ url_for('main.debug_clear') }}">清除資料</a>
     </nav>

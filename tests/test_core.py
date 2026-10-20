@@ -170,6 +170,55 @@ def test_settings_hide_legacy_machine_semantics(client):
     assert "安全還原" in text
 
 
+def test_protected_modules_require_password_and_unlock(client, app):
+    locked = app.test_client()
+    response = locked.get("/reports")
+    assert response.status_code == 302
+    assert response.headers["Location"] == "/unlock?next=/reports"
+    assert locked.get("/jobs/new").status_code == 200
+    assert locked.get("/scan").status_code == 200
+
+    wrong = locked.post("/unlock", data={"password": "wrong", "next": "/reports"})
+    assert wrong.status_code == 200
+    assert "密碼錯誤" in wrong.get_data(as_text=True)
+
+    unlocked = locked.post("/unlock", data={"password": "TJR", "next": "/reports"})
+    assert unlocked.status_code == 302
+    assert unlocked.headers["Location"].endswith("/reports")
+    assert locked.get("/reports").status_code == 200
+    locked.get("/")
+    assert locked.get("/reports").status_code == 302
+
+
+def test_settings_can_change_access_password(app):
+    locked = app.test_client()
+    assert locked.post("/unlock", data={"password": "TJR", "next": "/settings"}).status_code == 302
+    changed = locked.post(
+        "/settings/password",
+        data={"current_password": "TJR", "new_password": "NEWPASS", "confirm_password": "NEWPASS"},
+    )
+    assert changed.status_code == 302
+
+    fresh = app.test_client()
+    old_password = fresh.post("/unlock", data={"password": "TJR", "next": "/settings"})
+    assert old_password.status_code == 200
+    new_password = fresh.post("/unlock", data={"password": "NEWPASS", "next": "/settings"})
+    assert new_password.status_code == 302
+    assert new_password.headers["Location"].endswith("/settings")
+
+
+def test_settings_can_temporarily_disable_access_password(app):
+    client = app.test_client()
+    assert client.post("/unlock", data={"password": "TJR", "next": "/settings"}).status_code == 302
+    disabled = client.post("/settings/password-mode", data={})
+    assert disabled.status_code == 302
+
+    fresh = app.test_client()
+    assert fresh.get("/reports").status_code == 200
+    assert fresh.post("/settings/password-mode", data={"password_enabled": "1"}).status_code == 302
+    assert fresh.get("/reports").status_code == 302
+
+
 def test_scan_has_independent_page(client, app):
     response = client.get("/scan")
     assert response.status_code == 200
@@ -239,7 +288,7 @@ def test_report_filter_print_and_export_use_product_serial(client, app, tmp_path
         export_xlsx(query_report({}), output)
         workbook = load_workbook(output, read_only=True)
         assert workbook.sheetnames == ["明細"]
-        assert [cell.value for cell in workbook["明細"][1]] == ["機型", "製號", "狀態", "開始時間", "結束時間", "時長", "組裝人員"]
+        assert [cell.value for cell in workbook["明細"][1]] == ["機型", "製號", "組裝階段", "狀態", "開始時間", "結束時間", "時長", "組裝人員"]
         assert workbook["明細"]["B2"].value in {"E27-10", "E27-11"}
 
     preview = client.get(f"/batches/{batch_id}/print").get_data(as_text=True)
@@ -257,7 +306,27 @@ def test_report_filter_print_and_export_use_product_serial(client, app, tmp_path
     report = client.get("/reports?model_name=HR-255").get_data(as_text=True)
     assert "<td>HR-255</td>" in report
     assert "<td>HR-255（HR255）</td>" not in report
+    assert "組裝階段" in report
     assert "機型名稱" in report
+
+
+def test_report_shows_five_axis_assembly_stage(client, app, tmp_path):
+    from app.services import export_xlsx, query_report
+    from openpyxl import load_workbook
+
+    with app.app_context():
+        model_id = create_model("FHR-255CL", "FHR255CL", serial_prefix="F")
+        batch_id, _ = create_batch(model_id, 2026, 1, 1, "operator", "傾")
+        rows = query_report({"model_name": "FHR-255CL"})
+        assert rows[0]["assembly_stage"] == "傾"
+        output = tmp_path / "five-axis-report.xlsx"
+        export_xlsx(rows, output)
+        workbook = load_workbook(output, read_only=True)
+        assert workbook["明細"]["C2"].value == "傾斜軸"
+
+    report = client.get("/reports?model_name=FHR-255CL").get_data(as_text=True)
+    assert "傾斜軸" in report
+    assert "FHR-255CL" in report
 
 
 def test_recent_batches_reprint_reuses_original_batch_and_barcodes(client, app):
@@ -540,6 +609,8 @@ def test_dashboard_status_cards_and_report_duration(client, app):
     assert "未完成" in home_text
     assert "已完成" in home_text
 
+    with client.session_transaction() as session:
+        session["admin_unlocked"] = True
     incomplete = client.get("/reports?status_group=incomplete")
     assert incomplete.status_code == 200
     assert "E27-01" in incomplete.get_data(as_text=True)
@@ -652,7 +723,7 @@ def test_debug_clear_selected_data_has_recoverable_backup(client, app):
         db = get_db()
         for table in ("production_batch", "job_run", "barcode_record", "scan_event", "assembly_worker", "model_master", "machine_master"):
             assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
-        assert db.execute("SELECT COUNT(*) FROM app_settings").fetchone()[0] == 2
+        assert db.execute("SELECT COUNT(*) FROM app_settings").fetchone()[0] == 4
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
         log = db.execute("SELECT details FROM audit_log WHERE action='debug_clear'").fetchone()
         assert log is not None

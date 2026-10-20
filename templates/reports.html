@@ -16,11 +16,11 @@
 <section class="panel table-wrap">
   <p>共 {{ rows|length }} 筆產品</p>
   <table>
-    <tr><th>機型</th><th>產品製號</th><th>製作年份</th><th>狀態</th><th>開始時間</th><th>完成時間</th><th>運作時長</th><th>組裝人員</th></tr>
+    <tr><th>機型</th><th>產品製號</th><th>組裝階段</th><th>製作年份</th><th>狀態</th><th>開始時間</th><th>完成時間</th><th>運作時長</th><th>組裝人員</th></tr>
     {% for row in rows %}
-    <tr><td>{{ row.model_name_snapshot }}</td><td>{{ row.product_serial or row.machine_no_snapshot }}</td><td>{{ row.manufacturing_year or '-' }}</td><td>{{ status_label(row.status) }}</td><td>{{ format_datetime(row.started_at) }}</td><td>{{ format_datetime(row.finished_at) }}</td><td>{{ format_duration(row.started_at, row.finished_at, row.status) }}</td><td>{{ row.operator_name }}</td></tr>
+    <tr><td>{{ row.model_name_snapshot }}</td><td>{{ row.product_serial or row.machine_no_snapshot }}</td><td>{{ assembly_stage_label(row.assembly_stage) }}</td><td>{{ row.manufacturing_year or '-' }}</td><td>{{ status_label(row.status) }}</td><td>{{ format_datetime(row.started_at) }}</td><td>{{ format_datetime(row.finished_at) }}</td><td>{{ format_duration(row.started_at, row.finished_at, row.status) }}</td><td>{{ row.operator_name }}</td></tr>
     {% else %}
-    <tr><td colspan="8">無資料</td></tr>
+    <tr><td colspan="9">無資料</td></tr>
     {% endfor %}
   </table>
 </section>

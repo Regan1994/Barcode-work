@@ -4,7 +4,7 @@
 <section class="home-actions">
   <article class="home-card">
     <p class="home-card-kicker">01 / 建立</p>
-    <h1>條碼報工工作台</h1>
+    <h1>條碼建立</h1>
     <p class="home-card-description">選擇機型與組裝人員，建立產品製號並列印 START／FINISH 條碼。</p>
     <a class="button primary home-card-action" href="{{ url_for('main.job_new') }}">建立新報工</a>
   </article>
@@ -12,20 +12,36 @@
   <article class="home-card home-scan-card">
     <p class="home-card-kicker">02 / 現場作業</p>
     <h2>報工掃描</h2>
-    <p class="home-card-description">先掃 START；整批產品完成後，再掃 FINISH。請使用 USB HID 即時上傳模式。</p>
-    <form method="post" id="scan-form" action="{{ url_for('main.index') }}" class="home-scan-form">
-      <label for="payload">掃描 START／FINISH 條碼</label>
-      <input id="payload" name="payload" autofocus autocomplete="off" placeholder="等待掃描…" required>
-      <button class="button primary home-card-action" type="submit">送出掃描</button>
-    </form>
-    {% if scan_result %}<div class="scan-result {{ scan_result.result }}" role="status"><strong>{{ scan_result.result }}</strong><span>{{ scan_result.message }}</span><small>{{ format_datetime(scan_result.scanned_at) }}</small></div>{% endif %}
+    <p class="home-card-description">進入獨立掃描頁，掃描 START／FINISH 條碼並查看即時處理結果。</p>
+    <a class="button primary home-card-action" href="{{ url_for('main.scan_page') }}">進入報工掃描</a>
   </article>
 
   <article class="home-card">
-    <p class="home-card-kicker">03 / 資料查詢</p>
-    <h2>查詢</h2>
+    <p class="home-card-kicker">03 / 批次管理</p>
+    <h2>最近批次</h2>
+    <p class="home-card-description">查看最近建立的報工批次，需要時重新列印原本的 START／FINISH 標籤。</p>
+    <a class="button primary home-card-action" href="{{ url_for('main.recent_batches') }}">查看最近批次</a>
+  </article>
+
+  <article class="home-card">
+    <p class="home-card-kicker">04 / 資料查詢</p>
+    <h2>報表與匯出</h2>
     <p class="home-card-description">依日期、機型、製號、狀態或組裝人員查找報工紀錄，並匯出 Excel。</p>
-    <a class="button primary home-card-action" href="{{ url_for('main.reports') }}">查詢報工紀錄</a>
+    <a class="button primary home-card-action" href="{{ url_for('main.reports') }}">開啟報表</a>
+  </article>
+
+  <article class="home-card">
+    <p class="home-card-kicker">05 / 主檔管理</p>
+    <h2>機型主檔</h2>
+    <p class="home-card-description">管理機型名稱與製號字首，建立報工時會從這裡選擇可用機型。</p>
+    <a class="button primary home-card-action" href="{{ url_for('main.models') }}">管理機型</a>
+  </article>
+
+  <article class="home-card">
+    <p class="home-card-kicker">06 / 人員管理</p>
+    <h2>組裝人員</h2>
+    <p class="home-card-description">新增、停用或重新啟用組裝人員，讓報工紀錄保留正確的人員資訊。</p>
+    <a class="button primary home-card-action" href="{{ url_for('main.assembly_workers') }}">管理組裝人員</a>
   </article>
 </section>
 
@@ -35,11 +51,10 @@
   {% else %}
   <a class="stat button" href="{{ url_for('main.reports', status_group=row.filter) }}"><span>{{ row.label }}</span><strong>{{ row.count }}</strong></a>
   {% endif %}{% endfor %}
-</section>
-
-<section class="panel home-backup">
-  <h2>資料安全</h2>
-  <p>系統預設只綁定 127.0.0.1，資料保存在本機 SQLite。管理員可建立驗證過的備份。</p>
-  <form method="post" action="{{ url_for('main.backup') }}"><button class="button">立即備份資料庫</button></form>
+  <section class="home-backup">
+    <h2>資料安全</h2>
+    <p>本機 SQLite 資料庫，可建立驗證過的備份。</p>
+    <form method="post" action="{{ url_for('main.backup') }}"><button class="button">立即備份</button></form>
+  </section>
 </section>
 {% endblock %}

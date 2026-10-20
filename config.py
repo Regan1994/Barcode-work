@@ -10,6 +10,7 @@ BACKUP_DIR = INSTANCE_DIR / "backups"
 
 class Config:
     SECRET_KEY = os.environ.get("INTJR_SECRET_KEY", "intjr-local-development-key")
+    INITIAL_ACCESS_PASSWORD = "TJR"
     DATABASE = str(DATABASE_PATH)
     BACKUP_DIRECTORY = str(BACKUP_DIR)
     HOST = "127.0.0.1"

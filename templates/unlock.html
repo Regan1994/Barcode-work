@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>需要管理密碼</h1>
+<section class="panel form-narrow">
+  <p class="muted">此功能需要輸入管理密碼才能繼續。</p>
+  <form method="post" action="{{ url_for('main.unlock') }}">
+    <input type="hidden" name="next" value="{{ next_path }}">
+    <label>管理密碼<input type="password" name="password" required autofocus autocomplete="current-password"></label>
+    <button class="button primary" type="submit">解鎖並繼續</button>
+  </form>
+  <a class="muted" href="{{ url_for('main.index') }}">返回首頁</a>
+</section>
+{% endblock %}

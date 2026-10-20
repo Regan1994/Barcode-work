@@ -10,5 +10,8 @@ def app(tmp_path):
 
 @pytest.fixture()
 def client(app):
-    return app.test_client()
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["admin_unlocked"] = True
+    return client
 

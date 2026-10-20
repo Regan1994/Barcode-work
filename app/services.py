@@ -7,6 +7,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from werkzeug.security import check_password_hash, generate_password_hash
+
 from .db import get_db, utc_now
 
 
@@ -22,6 +24,7 @@ MODEL_SERIAL_PREFIXES = {"HR255": "E", "RC255": "ER", "AR210": "C", "AR170": "B"
 ASSEMBLY_STAGES = ("旋", "傾", "尾", "組")
 ASSEMBLY_STAGE_CODES = {"旋": "R", "傾": "T", "尾": "B", "組": "A"}
 ASSEMBLY_STAGE_BY_CODE = {code: stage for stage, code in ASSEMBLY_STAGE_CODES.items()}
+ASSEMBLY_STAGE_LABELS = {"旋": "旋轉軸", "傾": "傾斜軸", "尾": "尾座", "組": "組合"}
 DEBUG_CLEAR_CHOICES = {
     "production": "報工批次與條碼",
     "scans": "掃描紀錄",
@@ -60,6 +63,11 @@ def new_id():
 
 def status_label(status):
     return STATUS_LABELS.get(status, status or "-")
+
+
+def assembly_stage_label(stage):
+    """Return a clear report label for a five-axis assembly stage."""
+    return ASSEMBLY_STAGE_LABELS.get((stage or "").strip(), "—")
 
 
 def format_duration(started_at, finished_at, status=None):
@@ -131,6 +139,33 @@ def set_setting(key, value, operator_name="system"):
         (key, value, utc_now()),
     )
     add_audit("update_setting", "app_setting", key, {"value": value}, operator_name)
+    db.commit()
+
+
+def verify_access_password(password):
+    password_hash = get_setting("access_password_hash")
+    return bool(password_hash and password and check_password_hash(password_hash, password))
+
+
+def access_password_enabled():
+    return get_setting("access_password_enabled", "1") == "1"
+
+
+def set_access_password_enabled(enabled, operator_name="admin"):
+    set_setting("access_password_enabled", "1" if enabled else "0", operator_name)
+
+
+def change_access_password(current_password, new_password, operator_name="admin"):
+    if not verify_access_password(current_password):
+        raise ValueError("目前密碼不正確")
+    if not new_password or len(new_password) < 3:
+        raise ValueError("新密碼至少需要 3 個字元")
+    db = get_db()
+    db.execute(
+        "INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        ("access_password_hash", generate_password_hash(new_password), utc_now()),
+    )
+    add_audit("change_password", "app_setting", "access_password_hash", {"changed": True}, operator_name)
     db.commit()
 
 
@@ -702,7 +737,7 @@ def export_xlsx(rows, path):
     from openpyxl import Workbook
     from openpyxl.utils import get_column_letter
 
-    headers = ["機型", "製號", "狀態", "開始時間", "結束時間", "時長", "組裝人員"]
+    headers = ["機型", "製號", "組裝階段", "狀態", "開始時間", "結束時間", "時長", "組裝人員"]
     wb = Workbook()
     ws = wb.active
     ws.title = "明細"
@@ -713,7 +748,7 @@ def export_xlsx(rows, path):
         return "'" + value if value[:1] in {"=", "+", "-", "@"} else value
 
     for row in rows:
-        values = [row["model_name_snapshot"], row["product_serial"] or row["machine_no_snapshot"], status_label(row["status"]), format_datetime(row["started_at"]), format_datetime(row["finished_at"]), format_duration(row["started_at"], row["finished_at"], row["status"]), row["operator_name"]]
+        values = [row["model_name_snapshot"], row["product_serial"] or row["machine_no_snapshot"], assembly_stage_label(row["assembly_stage"]), status_label(row["status"]), format_datetime(row["started_at"]), format_datetime(row["finished_at"]), format_duration(row["started_at"], row["finished_at"], row["status"]), row["operator_name"]]
         ws.append([excel_value(v) for v in values])
     for cell in ws[1]:
         header_font = copy(cell.font)

@@ -3,14 +3,11 @@
 .home-card-kicker{margin:0 0 12px;color:#147d80;font-size:.8rem;font-weight:700;letter-spacing:.08em}
 .home-card h1,.home-card h2{margin:0 0 12px;color:#102a43;font-size:1.55rem;line-height:1.3}
 .home-card-description{margin:0 0 20px;color:#52677d}
-.home-card-action{align-self:flex-start;margin-top:auto}
-.home-scan-form{display:flex;flex-direction:column;margin-top:auto}
-.home-scan-form label{margin-bottom:7px}
-.home-scan-form input{width:100%;margin-bottom:12px}
-.home-scan-form .home-card-action{margin-top:0}
-.home-scan-card .scan-result{margin-top:14px}
+.home-card-action{align-self:stretch;display:flex;align-items:center;justify-content:center;width:100%;margin-top:auto;padding:18px 28px;min-height:68px;border-radius:12px;font-size:1.2rem;font-weight:700;text-align:center}
 .home-status{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:20px}
-.home-backup{margin-top:0}
-.home-backup h2{margin-top:0}
+.home-backup{display:flex;flex:1;min-width:280px;flex-direction:column;justify-content:center;margin:0;padding:16px 24px;background:#fff;border:1px solid #d9e2ec;border-radius:10px;box-shadow:0 2px 8px #102a4310}
+.home-backup h2{margin:0 0 4px;font-size:1.05rem;color:#102a43}
+.home-backup p{margin:0 0 10px;color:#627d98;font-size:.9rem}
+.home-backup form{margin-top:auto}
 @media(max-width:1000px){.home-actions{grid-template-columns:repeat(2,minmax(0,1fr))}.home-scan-card{grid-column:1/-1;grid-row:1}}
 @media(max-width:650px){.home-actions{grid-template-columns:1fr}.home-card{min-height:0;padding:22px}.home-scan-card{grid-column:auto;grid-row:auto}.home-card-action{margin-top:8px}}

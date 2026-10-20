@@ -2,6 +2,24 @@
 {% block content %}
 <h1>系統設定</h1>
 <section class="panel form-narrow">
+  <h2>功能密碼</h2>
+  <p class="muted">排查問題時可暫時停用模組密碼；完成後請重新啟用。</p>
+  <form method="post" action="{{ url_for('main.password_mode') }}">
+    <label class="check"><input type="checkbox" name="password_enabled" value="1" {% if password_enabled %}checked{% endif %}> 啟用功能密碼</label>
+    <button class="button" type="submit">儲存功能密碼設定</button>
+  </form>
+</section>
+<section class="panel form-narrow">
+  <h2>更改管理密碼</h2>
+  <p class="muted">首頁的主檔、報表、最近批次、設定與清除資料功能都需要管理密碼。</p>
+  <form method="post" action="{{ url_for('main.change_password') }}">
+    <label>目前密碼<input type="password" name="current_password" required autocomplete="current-password"></label>
+    <label>新密碼<input type="password" name="new_password" required minlength="3" autocomplete="new-password"></label>
+    <label>再次輸入新密碼<input type="password" name="confirm_password" required minlength="3" autocomplete="new-password"></label>
+    <button class="button primary" type="submit">更新密碼</button>
+  </form>
+</section>
+<section class="panel form-narrow">
   <h2>安全還原</h2>
   <p class="muted">請輸入已取得的 SQLite 備份完整路徑。系統會先建立目前資料庫的安全備份，再驗證來源 integrity_check 後替換。</p>
   <form method="post" action="{{ url_for('main.restore') }}">

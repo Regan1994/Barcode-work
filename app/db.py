@@ -2,6 +2,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from flask import current_app, g
+from werkzeug.security import generate_password_hash
 
 
 SCHEMA = """
@@ -194,6 +195,14 @@ def init_db():
     db.execute(
         "INSERT OR IGNORE INTO app_settings(key, value, updated_at) VALUES (?, ?, ?)",
         ("batch_scan_mode", "batch", utc_now()),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO app_settings(key, value, updated_at) VALUES (?, ?, ?)",
+        ("access_password_hash", generate_password_hash(current_app.config["INITIAL_ACCESS_PASSWORD"]), utc_now()),
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO app_settings(key, value, updated_at) VALUES (?, ?, ?)",
+        ("access_password_enabled", "1", utc_now()),
     )
     db.commit()
 

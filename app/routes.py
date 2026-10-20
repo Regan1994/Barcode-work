@@ -9,9 +9,40 @@ from flask import Blueprint, current_app, flash, jsonify, redirect, render_templ
 
 from .barcode import code128_svg
 from .db import get_db
-from .services import ASSEMBLY_STAGES, DEBUG_CLEAR_CHOICES, backup_database, clear_debug_data, correct_actual_qty, create_assembly_worker, create_batch, create_model, debug_clear_counts, delete_batch, delete_model, ensure_barcodes, export_xlsx, get_assembly_worker, get_batch, get_job, is_five_axis_model, list_assembly_workers, list_models, list_recent_batches, list_report_operators, parse_payload, query_report, restore_database, scan, set_assembly_worker_active, update_model
+from .services import ASSEMBLY_STAGES, DEBUG_CLEAR_CHOICES, access_password_enabled, backup_database, change_access_password, clear_debug_data, correct_actual_qty, create_assembly_worker, create_batch, create_model, debug_clear_counts, delete_batch, delete_model, ensure_barcodes, export_xlsx, get_assembly_worker, get_batch, get_job, is_five_axis_model, list_assembly_workers, list_models, list_recent_batches, list_report_operators, parse_payload, query_report, restore_database, scan, set_access_password_enabled, set_assembly_worker_active, update_model, verify_access_password
 
 bp = Blueprint("main", __name__)
+
+PROTECTED_ENDPOINTS = {
+    "main.models",
+    "main.model_update",
+    "main.model_delete",
+    "main.assembly_workers",
+    "main.assembly_worker_status",
+    "main.recent_batches",
+    "main.batch_delete",
+    "main.reports",
+    "main.reports_export",
+    "main.quantity_update",
+    "main.settings",
+    "main.change_password",
+    "main.password_mode",
+    "main.debug_clear",
+    "main.backup",
+    "main.restore",
+}
+
+
+def safe_next_path(value):
+    return value if value and value.startswith("/") and not value.startswith("//") else url_for("main.index")
+
+
+@bp.before_request
+def require_admin_unlock():
+    if request.endpoint not in PROTECTED_ENDPOINTS or not access_password_enabled() or session.get("admin_unlocked"):
+        return None
+    next_path = request.full_path.rstrip("?")
+    return redirect(url_for("main.unlock", next=next_path))
 
 
 def render_home(scan_result=None):
@@ -34,8 +65,21 @@ def render_home(scan_result=None):
 
 @bp.route("/", methods=["GET", "POST"])
 def index():
+    if request.method == "GET":
+        session.pop("admin_unlocked", None)
     result = scan(request.form.get("payload", ""), "scanner") if request.method == "POST" else None
     return render_home(result)
+
+
+@bp.route("/unlock", methods=["GET", "POST"])
+def unlock():
+    next_path = safe_next_path(request.form.get("next") if request.method == "POST" else request.args.get("next"))
+    if request.method == "POST":
+        if verify_access_password(request.form.get("password", "")):
+            session["admin_unlocked"] = True
+            return redirect(next_path)
+        flash("密碼錯誤，請重新輸入", "error")
+    return render_template("unlock.html", next_path=next_path)
 
 
 @bp.route("/models", methods=["GET", "POST"])
@@ -218,7 +262,32 @@ def quantity_update(job_run_id):
 
 @bp.get("/settings")
 def settings():
-    return render_template("settings.html")
+    return render_template("settings.html", password_enabled=access_password_enabled())
+
+
+@bp.post("/settings/password")
+def change_password():
+    try:
+        new_password = request.form.get("new_password", "")
+        if new_password != request.form.get("confirm_password", ""):
+            raise ValueError("兩次輸入的新密碼不一致")
+        change_access_password(request.form.get("current_password", ""), new_password)
+        flash("密碼已更新", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.settings"))
+
+
+@bp.post("/settings/password-mode")
+def password_mode():
+    enabled = request.form.get("password_enabled") == "1"
+    set_access_password_enabled(enabled)
+    if not enabled:
+        session.pop("admin_unlocked", None)
+        flash("功能密碼已暫時停用，方便排查", "success")
+    else:
+        flash("功能密碼已重新啟用", "success")
+    return redirect(url_for("main.settings"))
 
 
 @bp.route("/debug/clear", methods=["GET", "POST"])
@@ -246,7 +315,7 @@ def debug_clear():
     return render_template("debug_clear.html", counts=debug_clear_counts(), choices=DEBUG_CLEAR_CHOICES, csrf_token=token)
 
 
-@bp.post("/backup")
+@bp.route("/backup", methods=["GET", "POST"])
 def backup():
     try:
         target = backup_database(current_app.config["BACKUP_DIRECTORY"])
