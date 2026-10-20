@@ -4,5 +4,8 @@ __pycache__/
 .pytest_cache/
 .pytest-tmp/
 instance/
+build/
+dist/
+*.spec
 *.log
 .aws/
