@@ -5,7 +5,7 @@ import pytest
 
 from app import create_app as build_app
 from app.db import get_db
-from app.services import backup_database, create_assembly_worker, create_batch, create_machine_range, create_model, ensure_barcodes, format_datetime, format_duration, get_job, machine_ids_from_numbers, parse_payload, restore_database, scan, set_assembly_worker_active, set_setting, status_label, verify_sqlite_backup
+from app.services import backup_database, create_assembly_worker, create_batch, create_machine_range, create_model, ensure_barcodes, format_datetime, format_duration, get_job, machine_ids_from_numbers, parse_payload, query_report, restore_database, scan, set_assembly_worker_active, set_setting, status_label, summarize_report_by_operator, verify_sqlite_backup
 
 
 def setup_data(app):
@@ -287,9 +287,12 @@ def test_report_filter_print_and_export_use_product_serial(client, app, tmp_path
         output = tmp_path / "report.xlsx"
         export_xlsx(query_report({}), output)
         workbook = load_workbook(output, read_only=True)
-        assert workbook.sheetnames == ["明細"]
+        assert workbook.sheetnames == ["明細", "員工統計"]
         assert [cell.value for cell in workbook["明細"][1]] == ["機型", "製號", "組裝階段", "狀態", "開始時間", "結束時間", "時長", "組裝人員"]
         assert workbook["明細"]["B2"].value in {"E27-10", "E27-11"}
+        assert [cell.value for cell in workbook["員工統計"][1]] == ["組裝人員", "組裝數量", "已完成", "進行中", "未開始", "已取消", "完成率"]
+        assert workbook["員工統計"]["A2"].value == "operator"
+        assert workbook["員工統計"]["B2"].value == 2
 
     preview = client.get(f"/batches/{batch_id}/print").get_data(as_text=True)
     assert '<strong>HR-255</strong>' in preview
@@ -659,6 +662,34 @@ def test_report_operator_dropdown_includes_inactive_and_historical_names(client,
     assert "E27-01" in filtered
     assert "E27-02" not in filtered
     assert "共 1 筆產品" in filtered
+
+
+def test_report_summarizes_quantities_by_operator_and_respects_filters(client, app):
+    with app.app_context():
+        model_id = create_model("HR-255", "HR255")
+        create_batch(model_id, 2026, 1, 3, "王小明")
+        create_batch(model_id, 2026, 4, 2, "李小華")
+        jobs = get_db().execute("SELECT product_serial FROM job_run ORDER BY product_serial").fetchall()
+        get_db().execute("UPDATE job_run SET status='finished' WHERE product_serial IN (?, ?)", (jobs[0]["product_serial"], jobs[1]["product_serial"]))
+        get_db().execute("UPDATE job_run SET status='started' WHERE product_serial=?", (jobs[2]["product_serial"],))
+        get_db().execute("UPDATE job_run SET status='cancelled' WHERE product_serial=?", (jobs[4]["product_serial"],))
+        get_db().commit()
+
+        summaries = summarize_report_by_operator(query_report({}))
+        assert summaries == [
+            {"operator_name": "王小明", "assembly_quantity": 3, "finished": 2, "started": 1, "created": 0, "cancelled": 0, "completion_rate": 66.7},
+            {"operator_name": "李小華", "assembly_quantity": 1, "finished": 0, "started": 0, "created": 1, "cancelled": 1, "completion_rate": 0.0},
+        ]
+
+    page = client.get("/reports").get_data(as_text=True)
+    assert "組裝人員統計" in page
+    assert "完成率" in page
+    assert "66.7%" in page
+
+    filtered = client.get("/reports", query_string={"operator_name": "李小華"}).get_data(as_text=True)
+    summary_section = filtered.split("<h2>組裝人員統計</h2>", 1)[1].split("<h2>產品明細</h2>", 1)[0]
+    assert "王小明" not in summary_section
+    assert "李小華" in summary_section
 
 
 def test_backup_and_restore_are_verified(app, tmp_path):

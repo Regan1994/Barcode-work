@@ -732,6 +732,36 @@ def query_report(filters):
     return db.execute(sql + " ORDER BY j.created_at DESC, j.id DESC", params).fetchall()
 
 
+def summarize_report_by_operator(rows):
+    """Summarize the currently filtered report rows by assembly worker."""
+    summaries = {}
+    for row in rows:
+        operator_name = (row["operator_name"] or "").strip() or "未指定"
+        summary = summaries.setdefault(
+            operator_name,
+            {
+                "operator_name": operator_name,
+                "assembly_quantity": 0,
+                "finished": 0,
+                "started": 0,
+                "created": 0,
+                "cancelled": 0,
+            },
+        )
+        status = row["status"]
+        if status in summary:
+            summary[status] += 1
+        if status != "cancelled":
+            summary["assembly_quantity"] += 1
+
+    result = []
+    for summary in summaries.values():
+        quantity = summary["assembly_quantity"]
+        summary["completion_rate"] = round(summary["finished"] * 100 / quantity, 1) if quantity else 0.0
+        result.append(summary)
+    return sorted(result, key=lambda item: (-item["assembly_quantity"], item["operator_name"].casefold()))
+
+
 def export_xlsx(rows, path):
     from copy import copy
     from openpyxl import Workbook
@@ -756,6 +786,30 @@ def export_xlsx(rows, path):
         cell.font = header_font
     for idx, header in enumerate(headers, 1):
         ws.column_dimensions[get_column_letter(idx)].width = min(max(len(header) + 2, 12), 24)
+
+    stats = wb.create_sheet("員工統計")
+    stats_headers = ["組裝人員", "組裝數量", "已完成", "進行中", "未開始", "已取消", "完成率"]
+    stats.append(stats_headers)
+    for summary in summarize_report_by_operator(rows):
+        stats.append(
+            [
+                excel_value(summary["operator_name"]),
+                summary["assembly_quantity"],
+                summary["finished"],
+                summary["started"],
+                summary["created"],
+                summary["cancelled"],
+                summary["completion_rate"] / 100,
+            ]
+        )
+    for cell in stats[1]:
+        header_font = copy(cell.font)
+        header_font.bold = True
+        cell.font = header_font
+    for cell in stats["G"][1:]:
+        cell.number_format = "0.0%"
+    for idx, header in enumerate(stats_headers, 1):
+        stats.column_dimensions[get_column_letter(idx)].width = min(max(len(header) + 4, 12), 24)
 
     wb.save(path)
 

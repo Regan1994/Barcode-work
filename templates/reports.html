@@ -14,6 +14,19 @@
   <form method="post" action="{{ url_for('main.reports_export') }}" class="export-form">{% for key,value in filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}<button class="button primary">匯出 Excel</button></form>
 </section>
 <section class="panel table-wrap">
+  <h2>組裝人員統計</h2>
+  <p class="muted">依目前篩選條件統計；已取消項目不計入組裝數量與完成率。</p>
+  <table>
+    <tr><th>組裝人員</th><th>組裝數量</th><th>已完成</th><th>進行中</th><th>未開始</th><th>已取消</th><th>完成率</th></tr>
+    {% for summary in summaries %}
+    <tr><td>{{ summary.operator_name }}</td><td><strong>{{ summary.assembly_quantity }}</strong></td><td>{{ summary.finished }}</td><td>{{ summary.started }}</td><td>{{ summary.created }}</td><td>{{ summary.cancelled }}</td><td>{{ '%.1f'|format(summary.completion_rate) }}%</td></tr>
+    {% else %}
+    <tr><td colspan="7">無資料</td></tr>
+    {% endfor %}
+  </table>
+</section>
+<section class="panel table-wrap">
+  <h2>產品明細</h2>
   <p>共 {{ rows|length }} 筆產品</p>
   <table>
     <tr><th>機型</th><th>產品製號</th><th>組裝階段</th><th>製作年份</th><th>狀態</th><th>開始時間</th><th>完成時間</th><th>運作時長</th><th>組裝人員</th></tr>
